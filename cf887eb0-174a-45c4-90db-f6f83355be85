@@ -1,0 +1,45 @@
+import { NextRequest } from "next/server";
+import { db } from "@/db";
+import { mailOutbox } from "@/db/schema";
+import { desc } from "drizzle-orm";
+import { requireAdmin, json } from "@/lib/auth";
+import { setConfig, getConfig } from "@/lib/platform";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const EDITABLE = ["registration_enabled", "maintenance_notice"] as const;
+
+export async function GET() {
+  const admin = await requireAdmin();
+  if (!admin) return json({ error: "Forbidden" }, 403);
+  const cfg: Record<string, string> = {};
+  for (const key of EDITABLE) cfg[key] = await getConfig(key, key === "registration_enabled" ? "true" : "");
+  const outbox = await db.select().from(mailOutbox).orderBy(desc(mailOutbox.createdAt)).limit(20);
+  return json({
+    config: cfg,
+    outbox,
+    integrations: {
+      smtp: Boolean(process.env.SMTP_HOST),
+      stripe: Boolean(process.env.STRIPE_SECRET_KEY),
+      github: Boolean(process.env.GITHUB_TOKEN),
+      googleOAuth: Boolean(process.env.GOOGLE_CLIENT_ID),
+      cloudflare: Boolean(process.env.CLOUDFLARE_API_TOKEN),
+    },
+  });
+}
+
+export async function PATCH(req: NextRequest) {
+  const admin = await requireAdmin();
+  if (!admin) return json({ error: "Forbidden" }, 403);
+  let body: Record<string, string>;
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid request body." }, 400);
+  }
+  for (const key of EDITABLE) {
+    if (typeof body[key] === "string") await setConfig(key, body[key].slice(0, 500));
+  }
+  return json({ ok: true });
+}

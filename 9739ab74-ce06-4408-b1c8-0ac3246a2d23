@@ -1,0 +1,156 @@
+import { NextRequest, NextResponse } from "next/server";
+import { db } from "@/db";
+import { projects, domains, serverlessFns, redirects } from "@/db/schema";
+import { and, eq } from "drizzle-orm";
+import path from "path";
+import { readDeploymentFile } from "@/lib/storage";
+import { recordEvent } from "@/lib/analytics";
+import { runFunction, incrementFnCount } from "@/lib/functions";
+import { mimeOf } from "@/lib/utils";
+import { clientIp } from "@/lib/auth";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function notFound(msg: string) {
+  return new NextResponse(
+    `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>404 — ORBIXA</title><style>body{background:#05060b;color:#e6e8f2;font-family:ui-monospace,SFMono-Regular,monospace;display:grid;place-items:center;min-height:100vh;margin:0}.c{text-align:center;padding:24px}.b{font-size:80px;font-weight:800;background:linear-gradient(90deg,#7c5cff,#38bdf8);-webkit-background-clip:text;background-clip:text;color:transparent}p{color:#8b93b0}.tiny{font-size:11px;letter-spacing:.25em;margin-top:28px;color:#59617e}</style></head><body><div class="c"><div class="b">404</div><p>${msg.replace(/[<>&]/g, "")}</p><p class="tiny">SERVED BY ORBIXA EDGE</p></div></body></html>`,
+    { status: 404, headers: { "content-type": "text/html; charset=utf-8" } },
+  );
+}
+
+async function resolveProject(slug: string, host: string) {
+  const bySlug = await db.select().from(projects).where(eq(projects.slug, slug)).limit(1);
+  if (bySlug[0]) return bySlug[0];
+  const cleanHost = host.split(":")[0].toLowerCase();
+  const d = await db.select().from(domains).where(and(eq(domains.domain, cleanHost), eq(domains.verified, true))).limit(1);
+  if (d[0]) {
+    const p = await db.select().from(projects).where(eq(projects.id, d[0].projectId)).limit(1);
+    if (p[0]) return p[0];
+  }
+  return null;
+}
+
+const COUNTRY_HEADERS = ["cf-ipcountry", "x-vercel-ip-country", "x-country-code"];
+
+async function handle(req: NextRequest, method: string) {
+  const t0 = Date.now();
+  const full = req.nextUrl.searchParams.get("__orbixa_path") ?? req.nextUrl.pathname;
+  const m = full.match(/^\/sites\/([a-z0-9-]+)(\/.*)?$/i);
+  if (!m) return notFound("Malformed site URL.");
+  const slug = m[1].toLowerCase();
+  const rest = m[2] ?? "/";
+  const host = req.headers.get("host") ?? "";
+  const ua = req.headers.get("user-agent");
+  const ip = clientIp(req);
+  const country = COUNTRY_HEADERS.map((h) => req.headers.get(h)).find(Boolean) ?? null;
+
+  const project = await resolveProject(slug, host);
+  if (!project) return notFound(`No ORBIXA project is published at "${slug}".`);
+
+  /* ------------------- Serverless / edge function dispatch ------------------- */
+  const fnMatch = rest.match(/^\/api\/([a-zA-Z0-9_-]+)\/?$/);
+  if (fnMatch) {
+    const fnRows = await db
+      .select()
+      .from(serverlessFns)
+      .where(and(eq(serverlessFns.projectId, project.id), eq(serverlessFns.route, fnMatch[1])))
+      .limit(1);
+    if (!fnRows[0]) return notFound(`Function "${fnMatch[1]}" not found on ${project.slug}.`);
+    const body = method === "GET" || method === "HEAD" ? "" : await req.text();
+    const query: Record<string, string> = {};
+    req.nextUrl.searchParams.forEach((v, k) => { if (k !== "__orbixa_path") query[k] = v; });
+    const headers: Record<string, string> = {};
+    req.headers.forEach((v, k) => (headers[k] = v));
+    const res = await runFunction(fnRows[0].code, { method, path: rest, query, headers, body }, project.id);
+    void incrementFnCount(fnRows[0].id);
+    void recordEvent({ projectId: project.id, type: "function", path: rest, bytes: res.body.length, status: res.status, durationMs: Date.now() - t0, ip, ua, country });
+    return new NextResponse(res.body, { status: res.status, headers: { ...res.headers, "x-orbixa-function": fnRows[0].route, "x-orbixa-runtime": fnRows[0].runtime } });
+  }
+
+  if (!project.activeDeploymentId) return notFound(`"${project.name}" has no active deployment yet. Deploy from your dashboard.`);
+  const deploymentId = project.activeDeploymentId;
+
+  /* -------------------------------- Redirects ------------------------------- */
+  const rules = await db.select().from(redirects).where(eq(redirects.projectId, project.id));
+  for (const r of rules) {
+    if (r.fromPath === rest) return NextResponse.redirect(new URL(`${req.nextUrl.origin}/sites/${slug}${r.toPath}`), r.status);
+  }
+
+  /* ------------------------------ File resolution --------------------------- */
+  const clean = rest.replace(/\/{2,}/g, "/");
+  const candidates: string[] = clean === "/"
+    ? ["index.html"]
+    : [clean.slice(1), clean.slice(1) + ".html", clean.slice(1).replace(/\/$/, "") + "/index.html"];
+
+  let buffer: Buffer | null = null;
+  let servedRel = "";
+  for (const c of candidates) {
+    const safe = path.posix.normalize("/" + c).slice(1);
+    if (safe.includes("..")) continue;
+    try {
+      buffer = await readDeploymentFile(deploymentId, safe);
+      servedRel = safe;
+      break;
+    } catch { /* try next candidate */ }
+  }
+
+  if (!buffer && project.spaFallback && !path.posix.extname(clean)) {
+    try {
+      buffer = await readDeploymentFile(deploymentId, "index.html");
+      servedRel = "index.html";
+    } catch { /* none */ }
+  }
+
+  if (!buffer) {
+    void recordEvent({ projectId: project.id, type: "error", path: rest, status: 404, ip, ua, country, durationMs: Date.now() - t0 });
+    return notFound(`Route "${rest}" not found on ${project.slug}.`);
+  }
+
+  const mime = mimeOf(servedRel);
+  let body: Buffer = buffer;
+  if (mime.startsWith("text/html")) {
+    let html = buffer.toString("utf8");
+    const baseTag = `<base href="/sites/${slug}/" />`;
+    // <base> makes relative asset paths resolve correctly for path-served sites.
+    if (/<head[^>]*>/i.test(html) && !/<base[\s>]/i.test(html)) html = html.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`);
+    const beacon = `<script>(function(){var q=new URLSearchParams({p:${JSON.stringify(project.id)},path:location.pathname,ref:document.referrer||""});if(navigator.sendBeacon){navigator.sendBeacon("/api/t?"+q)}else{fetch("/api/t?"+q,{method:"POST",keepalive:true,mode:"no-cors"}).catch(function(){})}})();</script>`;
+    html = html.includes("</body>") ? html.replace("</body>", `${beacon}</body>`) : html + beacon;
+    body = Buffer.from(html, "utf8");
+  }
+
+  void recordEvent({
+    projectId: project.id, type: "bandwidth", path: rest, bytes: body.byteLength, status: 200,
+    durationMs: Date.now() - t0, ip, ua, country, referrer: req.headers.get("referer"),
+  });
+
+  const isAsset = /\.(js|mjs|css|png|jpe?g|gif|webp|svg|woff2?|ttf|otf|avif|mp4|webm|mp3|wasm)$/i.test(servedRel);
+  const hasHash = /[.-][a-f0-9]{8,}\./i.test(servedRel);
+  return new NextResponse(new Uint8Array(body), {
+    status: 200,
+    headers: {
+      "content-type": mime,
+      "cache-control": isAsset ? (hasHash ? "public, max-age=31536000, immutable" : "public, max-age=3600") : "no-cache",
+      "x-orbixa-edge": process.env.PRIMARY_REGION || "local",
+      "x-orbixa-deployment": deploymentId,
+      "x-orbixa-cache": hasHash ? "IMMUTABLE" : isAsset ? "HIT-ELIGIBLE" : "DYNAMIC",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "x-frame-options": "SAMEORIGIN",
+      "server": "orbixa-edge",
+    },
+  });
+}
+
+export async function GET(req: NextRequest) {
+  return handle(req, "GET");
+}
+export async function POST(req: NextRequest) {
+  return handle(req, "POST");
+}
+export async function PUT(req: NextRequest) {
+  return handle(req, "PUT");
+}
+export async function DELETE(req: NextRequest) {
+  return handle(req, "DELETE");
+}

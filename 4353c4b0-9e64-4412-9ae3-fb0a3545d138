@@ -1,0 +1,94 @@
+/**
+ * ORBIXA Legal Center — policy registry.
+ * All policies are original works authored for ORBIXA. Nothing herein has been
+ * copied from another company. Documents are drafted for review by qualified
+ * counsel before regulatory reliance, and are consistent with Indian law
+ * (including the DPDP Act, 2023) and the expectations of major jurisdictions.
+ */
+
+export type PolicySection = { h: string; p?: string; ul?: string[] };
+export type PolicyVersion = { version: string; date: string; note: string };
+
+export type Policy = {
+  slug: string;
+  title: string;
+  kicker: string;
+  summary: string;
+  contact: string;
+  history: PolicyVersion[];
+  sections: PolicySection[];
+};
+
+export const LEGAL_CONTACTS = {
+  legal: "legal@orbixa.dev",
+  privacy: "privacy@orbixa.dev",
+  security: "security@orbixa.dev",
+  abuse: "abuse@orbixa.dev",
+  dmca: "copyright@orbixa.dev",
+};
+
+import { CORE_POLICIES } from "./core";
+import { PLATFORM_POLICIES } from "./platform";
+import { COMPLIANCE_POLICIES } from "./compliance";
+import { COMMERCIAL_POLICIES } from "./commercial";
+
+export const POLICIES: Policy[] = [
+  ...CORE_POLICIES,
+  ...PLATFORM_POLICIES,
+  ...COMPLIANCE_POLICIES,
+  ...COMMERCIAL_POLICIES,
+];
+
+/** Policies whose current version every active account must accept. */
+export const BINDING_POLICY_IDS = ["terms-of-service", "acceptable-use-policy", "privacy-policy", "cookie-policy"];
+
+export function getPolicy(slug: string) {
+  return POLICIES.find((p) => p.slug === slug) ?? null;
+}
+
+export function currentVersion(p: Policy) {
+  return p.history[p.history.length - 1].version;
+}
+
+export function lastUpdated(p: Policy) {
+  return p.history[p.history.length - 1].date;
+}
+
+export function searchPolicies(q: string) {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return [];
+  return POLICIES.map((p) => {
+    const hits: { heading: string; snippet: string }[] = [];
+    const titleHit = p.title.toLowerCase().includes(needle);
+    for (const s of p.sections) {
+      const hay = `${s.h} ${s.p ?? ""} ${(s.ul ?? []).join(" ")}`.toLowerCase();
+      if (hay.includes(needle)) {
+        const text = s.p ?? (s.ul ?? []).join(" · ");
+        const idx = text.toLowerCase().indexOf(needle);
+        const snippet = idx >= 0 ? `…${text.slice(Math.max(0, idx - 60), idx + 90)}…` : text.slice(0, 140);
+        hits.push({ heading: s.h, snippet });
+      }
+      if (hits.length >= 3) break;
+    }
+    return titleHit || hits.length ? { slug: p.slug, title: p.title, kicker: p.kicker, hits: hits.slice(0, 3), titleHit } : null;
+  }).filter(Boolean) as { slug: string; title: string; kicker: string; hits: { heading: string; snippet: string }[]; titleHit: boolean }[];
+}
+
+export function policyToMarkdown(p: Policy) {
+  const lines: string[] = [
+    `# ORBIXA — ${p.title}`,
+    "",
+    `Version ${currentVersion(p)} · Last updated ${lastUpdated(p)}`,
+    "",
+    `> ${p.summary}`,
+    "",
+  ];
+  for (const s of p.sections) {
+    lines.push(`## ${s.h}`, "");
+    if (s.p) lines.push(s.p, "");
+    for (const li of s.ul ?? []) lines.push(`- ${li}`);
+    if (s.ul?.length) lines.push("");
+  }
+  lines.push("---", "", `Contact: ${p.contact}`, "", "© ORBIXA Inc. Original policy document. All rights reserved.");
+  return lines.join("\n");
+}

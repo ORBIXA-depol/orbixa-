@@ -1,0 +1,48 @@
+import { NextRequest, NextResponse } from "next/server";
+import { db } from "@/db";
+import { authTokens, users } from "@/db/schema";
+import { and, eq, isNull, gt } from "drizzle-orm";
+import { json, rateLimit, clientIp } from "@/lib/auth";
+import { randomToken } from "@/lib/utils";
+import { sendEmail, appBaseUrl } from "@/lib/email";
+
+export const runtime = "nodejs";
+
+/** Email link lands here — verifies and redirects. */
+export async function GET(req: NextRequest) {
+  const token = req.nextUrl.searchParams.get("token") ?? "";
+  const origin = req.nextUrl.origin;
+  if (!token) return NextResponse.redirect(`${origin}/login?error=missing-token`);
+  const rows = await db
+    .select()
+    .from(authTokens)
+    .where(and(eq(authTokens.token, token), eq(authTokens.type, "verify_email"), isNull(authTokens.usedAt), gt(authTokens.expiresAt, new Date())))
+    .limit(1);
+  if (!rows[0]) return NextResponse.redirect(`${origin}/login?error=invalid-token`);
+  await db.update(authTokens).set({ usedAt: new Date() }).where(eq(authTokens.id, rows[0].id));
+  await db.update(users).set({ emailVerified: true }).where(eq(users.id, rows[0].userId));
+  return NextResponse.redirect(`${origin}/login?verified=1`);
+}
+
+/** Resend verification email. */
+export async function POST(req: NextRequest) {
+  const ip = clientIp(req);
+  if (!rateLimit(`verify:${ip}`, 5, 60_000)) return json({ error: "Too many attempts." }, 429);
+  let body: { email?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid request." }, 400);
+  }
+  const email = (body.email ?? "").trim().toLowerCase();
+  const rows = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  const user = rows[0];
+  if (!user) return json({ ok: true }); // do not leak account existence
+  if (user.emailVerified) return json({ ok: true, alreadyVerified: true });
+  const token = randomToken(32);
+  await db.insert(authTokens).values({ userId: user.id, type: "verify_email", token, expiresAt: new Date(Date.now() + 86400_000) });
+  const base = appBaseUrl() || req.nextUrl.origin;
+  const link = `${base}/api/auth/verify?token=${token}`;
+  const mail = await sendEmail(email, "Verify your ORBIXA account", `Confirm your email:\n${link}\n\nExpires in 24 hours.`);
+  return json({ ok: true, emailDelivery: mail.delivered ? "smtp" : "outbox", verifyUrl: mail.delivered ? undefined : link });
+}

@@ -1,0 +1,12 @@
+import { json } from "@/lib/auth";
+
+export const runtime = "nodejs";
+
+export async function GET() {
+  return json({
+    google: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
+    smtp: Boolean(process.env.SMTP_HOST),
+    github: Boolean(process.env.GITHUB_TOKEN),
+    stripe: Boolean(process.env.STRIPE_SECRET_KEY),
+  });
+}

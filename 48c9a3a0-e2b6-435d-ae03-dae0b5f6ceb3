@@ -1,0 +1,29 @@
+"use client";
+
+import { useState } from "react";
+import { CheckCircle2 } from "lucide-react";
+
+export function AcceptButton({ slug, version }: { slug: string; version: string }) {
+  const [state, setState] = useState<"idle" | "busy" | "done">("idle");
+  if (state === "done") {
+    return <span className="chip !text-[var(--green)] !border-[rgba(52,211,153,.4)]"><CheckCircle2 size={10} /> ACCEPTED</span>;
+  }
+  return (
+    <button
+      className="btn btn-primary !py-1.5 !px-3.5 !text-[11px]"
+      disabled={state === "busy"}
+      onClick={async () => {
+        setState("busy");
+        const r = await fetch("/api/legal/accept", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ policies: [{ slug, version }], source: "banner" }),
+        });
+        if (r.ok) setState("done");
+        else setState("idle");
+      }}
+    >
+      {state === "busy" ? "Recording…" : `Accept v${version}`}
+    </button>
+  );
+}

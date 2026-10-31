@@ -1,0 +1,5 @@
+import type { Metadata } from "next";
+import { ResetPageWrapped } from "@/components/auth-form";
+
+export const metadata: Metadata = { title: "New Password" };
+export default function Page() { return <ResetPageWrapped />; }

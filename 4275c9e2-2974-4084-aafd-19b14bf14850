@@ -1,0 +1,27 @@
+import { db } from "@/db";
+import { subscriptions, plans, invoices, projects } from "@/db/schema";
+import { desc, eq, sql } from "drizzle-orm";
+import { requireUser, json } from "@/lib/auth";
+import { usageForOwner } from "@/lib/analytics";
+import { currentStorageBytes } from "@/lib/launch";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  const user = await requireUser();
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const allPlans = await db.select().from(plans);
+  const sub = await db.select().from(subscriptions).where(eq(subscriptions.userId, user.id)).orderBy(desc(subscriptions.createdAt)).limit(1);
+  const inv = await db.select().from(invoices).where(eq(invoices.userId, user.id)).orderBy(desc(invoices.createdAt)).limit(24);
+  const usage = await usageForOwner(user.id);
+  const storageBytes = await currentStorageBytes(user.id);
+  const projCount = await db.select({ count: sql<number>`count(*)` }).from(projects).where(eq(projects.ownerId, user.id));
+  return json({
+    plans: allPlans,
+    subscription: sub[0] ?? null,
+    invoices: inv,
+    usage: { ...usage, storageBytes, projects: Number(projCount[0]?.count ?? 0) },
+    stripeEnabled: Boolean(process.env.STRIPE_SECRET_KEY),
+  });
+}

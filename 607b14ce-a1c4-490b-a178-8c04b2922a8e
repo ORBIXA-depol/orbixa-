@@ -1,0 +1,148 @@
+import { db } from "@/db";
+import { events } from "@/db/schema";
+import { and, eq, gte, sql } from "drizzle-orm";
+import { sha } from "./crypto";
+import { classifySource, deviceOf } from "./utils";
+
+export const runtime = "nodejs";
+
+export async function recordEvent(e: {
+  projectId: string;
+  type: "pageview" | "bandwidth" | "error" | "function";
+  path?: string | null;
+  referrer?: string | null;
+  country?: string | null;
+  bytes?: number;
+  status?: number;
+  durationMs?: number;
+  ua?: string | null;
+  ip?: string | null;
+}) {
+  try {
+    await db.insert(events).values({
+      projectId: e.projectId,
+      type: e.type,
+      path: e.path?.slice(0, 300) ?? null,
+      referrer: e.referrer?.slice(0, 500) ?? null,
+      source: e.type === "pageview" ? classifySource(e.referrer ?? null) : null,
+      country: e.country ?? null,
+      device: deviceOf(e.ua ?? null),
+      visitorHash: e.ip ? sha(`${e.ip}|${e.ua ?? ""}`) : null,
+      bytes: e.bytes ?? 0,
+      status: e.status ?? null,
+      durationMs: e.durationMs ?? null,
+    });
+  } catch { /* analytics must never break serving */ }
+}
+
+export async function projectAnalytics(projectId: string, days: number) {
+  const since = new Date(Date.now() - days * 86400_000);
+  const rows = await db
+    .select({
+      day: sql<string>`to_char(date_trunc('day', ${events.createdAt}), 'YYYY-MM-DD')`,
+      views: sql<number>`count(*) filter (where ${events.type} = 'pageview')`,
+      visitors: sql<number>`count(distinct ${events.visitorHash}) filter (where ${events.type} = 'pageview')`,
+      bandwidth: sql<number>`coalesce(sum(${events.bytes}) filter (where ${events.type} = 'bandwidth'), 0)`,
+      errors: sql<number>`count(*) filter (where ${events.type} = 'error')`,
+      avgMs: sql<number>`coalesce(round(avg(${events.durationMs}) filter (where ${events.durationMs} is not null)), 0)`,
+    })
+    .from(events)
+    .where(and(eq(events.projectId, projectId), gte(events.createdAt, since)))
+    .groupBy(sql`date_trunc('day', ${events.createdAt})`)
+    .orderBy(sql`date_trunc('day', ${events.createdAt})`);
+
+  // Fill missing days
+  const series: { day: string; views: number; visitors: number; bandwidth: number; errors: number; avgMs: number }[] = [];
+  const byDay = new Map(rows.map((r) => [r.day, r]));
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 86400_000).toISOString().slice(0, 10);
+    const r = byDay.get(d);
+    series.push({
+      day: d,
+      views: Number(r?.views ?? 0),
+      visitors: Number(r?.visitors ?? 0),
+      bandwidth: Number(r?.bandwidth ?? 0),
+      errors: Number(r?.errors ?? 0),
+      avgMs: Number(r?.avgMs ?? 0),
+    });
+  }
+
+  const totals = await db
+    .select({
+      views: sql<number>`count(*) filter (where ${events.type} = 'pageview')`,
+      visitors: sql<number>`count(distinct ${events.visitorHash}) filter (where ${events.type} = 'pageview')`,
+      bandwidth: sql<number>`coalesce(sum(${events.bytes}) filter (where ${events.type} = 'bandwidth'), 0)`,
+      errors: sql<number>`count(*) filter (where ${events.type} = 'error')`,
+      avgMs: sql<number>`coalesce(round(avg(${events.durationMs}) filter (where ${events.durationMs} is not null)), 0)`,
+    })
+    .from(events)
+    .where(and(eq(events.projectId, projectId), gte(events.createdAt, since)));
+
+  const sources = await db
+    .select({ source: events.source, count: sql<number>`count(*)` })
+    .from(events)
+    .where(and(eq(events.projectId, projectId), gte(events.createdAt, since), eq(events.type, "pageview")))
+    .groupBy(events.source);
+
+  const countries = await db
+    .select({ country: events.country, count: sql<number>`count(*)` })
+    .from(events)
+    .where(and(eq(events.projectId, projectId), gte(events.createdAt, since), eq(events.type, "pageview")))
+    .groupBy(events.country)
+    .orderBy(sql`count(*) desc`)
+    .limit(8);
+
+  const topPages = await db
+    .select({ path: events.path, count: sql<number>`count(*)` })
+    .from(events)
+    .where(and(eq(events.projectId, projectId), gte(events.createdAt, since), eq(events.type, "pageview")))
+    .groupBy(events.path)
+    .orderBy(sql`count(*) desc`)
+    .limit(8);
+
+  const devices = await db
+    .select({ device: events.device, count: sql<number>`count(*)` })
+    .from(events)
+    .where(and(eq(events.projectId, projectId), gte(events.createdAt, since), eq(events.type, "pageview")))
+    .groupBy(events.device);
+
+  const recentErrors = await db
+    .select({ path: events.path, status: events.status, createdAt: events.createdAt, count: sql<number>`count(*)` })
+    .from(events)
+    .where(and(eq(events.projectId, projectId), gte(events.createdAt, since), eq(events.type, "error")))
+    .groupBy(events.path, events.status, events.createdAt)
+    .orderBy(sql`${events.createdAt} desc`)
+    .limit(10);
+
+  return {
+    series,
+    totals: {
+      views: Number(totals[0]?.views ?? 0),
+      visitors: Number(totals[0]?.visitors ?? 0),
+      bandwidth: Number(totals[0]?.bandwidth ?? 0),
+      errors: Number(totals[0]?.errors ?? 0),
+      avgMs: Number(totals[0]?.avgMs ?? 0),
+    },
+    sources: sources.map((s) => ({ source: s.source ?? "direct", count: Number(s.count) })),
+    countries: countries.map((c) => ({ country: c.country ?? "Unknown", count: Number(c.count) })),
+    topPages: topPages.map((p) => ({ path: p.path ?? "/", count: Number(p.count) })),
+    devices: devices.map((d) => ({ device: d.device ?? "unknown", count: Number(d.count) })),
+    recentErrors,
+  };
+}
+
+export async function usageForOwner(ownerId: string) {
+  const monthStart = new Date();
+  monthStart.setUTCDate(1);
+  monthStart.setUTCHours(0, 0, 0, 0);
+  const rows = await db.execute(sql`
+    select
+      count(*) filter (where e.type = 'pageview') as views,
+      coalesce(sum(e.bytes) filter (where e.type = 'bandwidth'), 0) as bandwidth
+    from ${events} e
+    join projects p on p.id = e.project_id
+    where p.owner_id = ${ownerId} and e.created_at >= ${monthStart}
+  `);
+  const r = (rows.rows?.[0] ?? {}) as { views?: string; bandwidth?: string };
+  return { pageviewsThisMonth: Number(r.views ?? 0), bandwidthThisMonth: Number(r.bandwidth ?? 0) };
+}

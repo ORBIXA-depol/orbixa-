@@ -1,0 +1,44 @@
+import { NextRequest } from "next/server";
+import { getPolicy, currentVersion, lastUpdated, policyToMarkdown, BINDING_POLICY_IDS } from "@/lib/legal";
+import { json, currentUser } from "@/lib/auth";
+import { db } from "@/db";
+import { policyAcceptances } from "@/db/schema";
+import { and, eq } from "drizzle-orm";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+type Ctx = { params: Promise<{ slug: string }> };
+
+export async function GET(req: NextRequest, ctx: Ctx) {
+  const { slug } = await ctx.params;
+  const p = getPolicy(slug);
+  if (!p) return json({ error: "Unknown policy." }, 404);
+
+  if (req.nextUrl.searchParams.get("format") === "md") {
+    const md = policyToMarkdown(p);
+    return new Response(md, {
+      headers: {
+        "content-type": "text/markdown; charset=utf-8",
+        "content-disposition": `attachment; filename="orbixa-${p.slug}-v${currentVersion(p)}.md"`,
+      },
+    });
+  }
+
+  // Acceptance state for the signed-in viewer
+  let acceptance: { version: string; acceptedAt: string } | null = null;
+  const user = await currentUser();
+  if (user) {
+    const rows = await db
+      .select()
+      .from(policyAcceptances)
+      .where(and(eq(policyAcceptances.userId, user.id), eq(policyAcceptances.policyId, p.slug), eq(policyAcceptances.version, currentVersion(p))))
+      .limit(1);
+    if (rows[0]) acceptance = { version: rows[0].version, acceptedAt: rows[0].acceptedAt.toISOString() };
+  }
+
+  return json({
+    policy: { ...p, version: currentVersion(p), lastUpdated: lastUpdated(p) },
+    binding: BINDING_POLICY_IDS.includes(p.slug),
+    acceptance,
+  });
+}

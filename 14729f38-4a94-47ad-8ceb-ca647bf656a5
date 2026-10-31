@@ -1,0 +1,251 @@
+import { db } from "@/db";
+import { deployments, projects, activities } from "@/db/schema";
+import { eq, sql } from "drizzle-orm";
+import { unzipSync } from "fflate";
+import path from "path";
+import fs from "fs/promises";
+import { execFile } from "child_process";
+import {
+  saveUpload,
+  readUpload,
+  writeDeploymentFile,
+  storagePaths,
+} from "./storage";
+
+export const runtime = "nodejs";
+
+export const MAX_ZIP_FILES = 5000;
+export const MAX_SINGLE_FILE = 50 * 1024 * 1024; // 50 MB
+
+export type ExtractedFile = { rel: string; data: Buffer };
+
+/** Securely extract a zip: rejects zip-slip, node_modules, oversized entries. */
+export function extractZip(zip: Buffer, maxUncompressed: number) {
+  const entries = unzipSync(new Uint8Array(zip));
+  const files: ExtractedFile[] = [];
+  let total = 0;
+  for (const [rawName, content] of Object.entries(entries)) {
+    const name = rawName.replace(/\\/g, "/");
+    if (name.endsWith("/")) continue;
+    // zip-slip + traversal protection
+    if (name.includes("..") || path.posix.isAbsolute(name) || name.startsWith("/")) continue;
+    if (/(^|\/)node_modules\//.test(name) || /(^|\/)\.git(\/|$)/.test(name)) continue;
+    if (files.length >= MAX_ZIP_FILES) throw new Error(`Archive exceeds ${MAX_ZIP_FILES} files`);
+    const buf = Buffer.from(content);
+    if (buf.byteLength > MAX_SINGLE_FILE) throw new Error(`File too large: ${name}`);
+    total += buf.byteLength;
+    if (total > maxUncompressed) throw new Error("Archive exceeds your plan's storage limit");
+    files.push({ rel: name, data: buf });
+  }
+  if (!files.length) throw new Error("Archive contains no deployable files");
+  return files;
+}
+
+/** Common repo zips nest everything one folder deep — unwrap it. */
+export function stripRootFolder(files: ExtractedFile[]) {
+  const first = files[0].rel.split("/")[0];
+  const allNested = files.every((f) => f.rel.startsWith(first + "/"));
+  if (!allNested) return files;
+  return files
+    .map((f) => ({ rel: f.rel.slice(first.length + 1), data: f.data }))
+    .filter((f) => f.rel.length > 0);
+}
+
+export function detectFramework(files: ExtractedFile[]) {
+  const names = new Set(files.map((f) => f.rel));
+  const readJson = (rel: string) => {
+    const f = files.find((x) => x.rel === rel);
+    if (!f) return null;
+    try {
+      return JSON.parse(f.data.toString("utf8"));
+    } catch {
+      return null;
+    }
+  };
+  const pkg = readJson("package.json");
+  const deps = { ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) };
+  const hasHtml = [...names].some((n) => /(^|\/)index\.html$/.test(n));
+  // Pre-built outputs take priority — they deploy instantly.
+  const outputDir = ["dist", "build", "out"].find((d) => names.has(`${d}/index.html`)) ?? null;
+  if (deps["next"]) return { framework: "next", hasBuild: !!pkg?.scripts?.build, outputDir: outputDir ?? (deps["next"] ? null : null) };
+  if (deps["react"]) return { framework: "react", hasBuild: !!pkg?.scripts?.build, outputDir };
+  if (deps["vue"] || deps["nuxt"]) return { framework: "vue", hasBuild: !!pkg?.scripts?.build, outputDir };
+  if (deps["astro"]) return { framework: "astro", hasBuild: !!pkg?.scripts?.build, outputDir };
+  if (deps["svelte"] || deps["@sveltejs/kit"]) return { framework: "svelte", hasBuild: !!pkg?.scripts?.build, outputDir };
+  if (hasHtml) return { framework: "static", hasBuild: false, outputDir };
+  if (pkg) return { framework: "node-build", hasBuild: !!pkg?.scripts?.build, outputDir };
+  return { framework: "static", hasBuild: false, outputDir };
+}
+
+function run(cmd: string, args: string[], cwd: string, timeoutMs: number, onData: (s: string) => void) {
+  return new Promise<number>((resolve) => {
+    const isWin = process.platform === "win32";
+    const child = execFile(isWin ? `${cmd}.cmd` : cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, CI: "true", npm_config_audit: "false", npm_config_fund: "false" } }, (err) => {
+      resolve(err ? (typeof err.code === "number" ? err.code : 1) : 0);
+    });
+    child.stdout?.on("data", (d) => onData(String(d)));
+    child.stderr?.on("data", (d) => onData(String(d)));
+  });
+}
+
+async function appendLog(deploymentId: string, line: string) {
+  const stamped = line
+    .split("\n")
+    .map((l) => `[${new Date().toISOString().slice(11, 19)}] ${l}`)
+    .join("\n");
+  await db
+    .update(deployments)
+    .set({ buildLog: sql`${deployments.buildLog} || ${stamped + "\n"}` })
+    .where(eq(deployments.id, deploymentId));
+}
+
+const BUILD_TIMEOUT = parseInt(process.env.BUILD_TIMEOUT_MS || "240000", 10);
+
+/** Full async build & publish pipeline for a deployment row. */
+export async function runDeployment(deploymentId: string) {
+  const startedAt = Date.now();
+  const dRows = await db.select().from(deployments).where(eq(deployments.id, deploymentId));
+  const dep = dRows[0];
+  if (!dep) return;
+  const log = (s: string) => appendLog(deploymentId, s).catch(() => {});
+  const fail = async (msg: string) => {
+    await log(`✖ FAILED — ${msg}`);
+    await db.update(deployments).set({ status: "failed", error: msg, durationMs: Date.now() - startedAt, finishedAt: new Date() }).where(eq(deployments.id, deploymentId));
+    await db.update(projects).set({ status: "failed", updatedAt: new Date() }).where(eq(projects.id, dep.projectId));
+  };
+
+  try {
+    await db.update(deployments).set({ status: "building" }).where(eq(deployments.id, deploymentId));
+    await db.update(projects).set({ status: "building", updatedAt: new Date() }).where(eq(projects.id, dep.projectId));
+    await log(`Orbixa build worker acquired (region: ${process.env.PRIMARY_REGION || "local"})`);
+    await log(`Source: ${dep.source}${dep.sourceMeta ? ` · ${dep.sourceMeta}` : ""}`);
+
+    const zip = await readUpload(deploymentId);
+    await log(`Archive received: ${(zip.byteLength / 1024 / 1024).toFixed(2)} MB — scanning for threats…`);
+
+    let files = stripRootFolder(extractZip(zip, 500 * 1024 * 1024));
+    await log(`Extraction OK — ${files.length} files passed security checks (zip-slip, symlink, size)`);
+
+    const det = detectFramework(files);
+    await log(`Framework detected: ${det.framework.toUpperCase()}${det.outputDir ? ` (prebuilt output: /${det.outputDir})` : ""}`);
+
+    let publishFiles = files;
+
+    if (det.outputDir) {
+      publishFiles = files
+        .filter((f) => f.rel.startsWith(det.outputDir + "/"))
+        .map((f) => ({ rel: f.rel.slice(det.outputDir!.length + 1), data: f.data }));
+      await log(`Using prebuilt output directory — build step skipped.`);
+    } else if (det.hasBuild && det.framework !== "static") {
+      // Real isolated build: materialize to workspace, install, build.
+      const buildDir = storagePaths.buildDir(deploymentId);
+      await fs.rm(buildDir, { recursive: true, force: true });
+      await fs.mkdir(buildDir, { recursive: true });
+      for (const f of files) {
+        const full = path.join(buildDir, f.rel);
+        await fs.mkdir(path.dirname(full), { recursive: true });
+        await fs.writeFile(full, f.data);
+      }
+      await log(`Materialized workspace · installing dependencies (timeout ${BUILD_TIMEOUT / 1000}s)…`);
+      const t0 = Date.now();
+      const installCode = await run("npm", ["install", "--no-audit", "--no-fund", "--loglevel=error"], buildDir, BUILD_TIMEOUT, (s) => { void log(s.trimEnd()); });
+      if (installCode !== 0) return fail(`npm install exited with code ${installCode}. Check your dependency tree.`);
+      await log(`Dependencies installed in ${((Date.now() - t0) / 1000).toFixed(1)}s — running build…`);
+      const b0 = Date.now();
+      const buildCode = await run("npm", ["run", "build"], buildDir, BUILD_TIMEOUT, (s) => { void log(s.trimEnd()); });
+      if (buildCode !== 0) return fail(`npm run build exited with code ${buildCode}. See logs above.`);
+      await log(`Build completed in ${((Date.now() - b0) / 1000).toFixed(1)}s`);
+      const outDir = await pickOutputDir(buildDir, det.framework);
+      if (!outDir) return fail(`No static output directory found (looked for dist, build, out). For Next.js enable static export: next.config { output: 'export' }.`);
+      publishFiles = await collectFromDisk(outDir.dir, outDir.prefix);
+      if (!publishFiles.length) return fail("Build produced no files to publish.");
+    }
+
+    if (!publishFiles.some((f) => f.rel === "index.html")) {
+      return fail("No index.html detected at site root — cannot publish as a website.");
+    }
+
+    await log(`Publishing ${publishFiles.length} files to object storage & CDN…`);
+    let totalBytes = 0;
+    for (const f of publishFiles) {
+      await writeDeploymentFile(deploymentId, f.rel, f.data);
+      totalBytes += f.data.byteLength;
+    }
+
+    const durationMs = Date.now() - startedAt;
+    await db.update(deployments).set({
+      status: "ready",
+      framework: det.framework,
+      fileCount: publishFiles.length,
+      totalBytes,
+      durationMs,
+      finishedAt: new Date(),
+      error: null,
+    }).where(eq(deployments.id, deploymentId));
+
+    // Promote to live
+    await db.update(deployments).set({ isActive: false }).where(eq(deployments.projectId, dep.projectId));
+    await db.update(deployments).set({ isActive: true }).where(eq(deployments.id, deploymentId));
+    const pRows = await db.select().from(projects).where(eq(projects.id, dep.projectId));
+    await db.update(projects).set({
+      status: "ready",
+      framework: det.framework,
+      activeDeploymentId: deploymentId,
+      totalDeployments: (pRows[0]?.totalDeployments ?? 0) + 1,
+      updatedAt: new Date(),
+    }).where(eq(projects.id, dep.projectId));
+    await db.insert(activities).values({
+      userId: dep.createdBy,
+      projectId: dep.projectId,
+      action: "deployment.ready",
+      detail: `v${dep.version} live in ${(durationMs / 1000).toFixed(1)}s (${publishFiles.length} files)`,
+    });
+    await log(`✔ DEPLOYED — live in ${(durationMs / 1000).toFixed(1)}s · ${publishFiles.length} files · ${(totalBytes / 1024).toFixed(0)} KB`);
+    return dep;
+  } catch (e) {
+    await fail(e instanceof Error ? e.message : "Unexpected build failure");
+  }
+}
+
+async function pickOutputDir(buildDir: string, framework: string) {
+  const candidates =
+    framework === "next" ? ["out", "dist", "build"] : framework === "react" ? ["dist", "build", "out"] : ["dist", "build", "out"];
+  for (const c of candidates) {
+    try {
+      const st = await fs.stat(path.join(buildDir, c, "index.html"));
+      if (st.isFile()) return { dir: path.join(buildDir, c), prefix: "" };
+    } catch { /* try next */ }
+  }
+  return null;
+}
+
+async function collectFromDisk(dir: string, prefix: string): Promise<ExtractedFile[]> {
+  let out: ExtractedFile[] = [];
+  const ents = await fs.readdir(dir, { withFileTypes: true });
+  for (const e of ents) {
+    if (e.name === "node_modules" || e.name.startsWith(".git")) continue;
+    const full = path.join(dir, e.name);
+    const rel = prefix ? `${prefix}/${e.name}` : e.name;
+    if (e.isDirectory()) out = out.concat(await collectFromDisk(full, rel));
+    else out.push({ rel, data: await fs.readFile(full) });
+    if (out.length > MAX_ZIP_FILES) throw new Error("Build output exceeds file limit");
+  }
+  return out;
+}
+
+/** Download a GitHub repo archive (public repos work keyless; GITHUB_TOKEN raises limits + enables private). */
+export async function fetchGitHubRepo(repoUrl: string) {
+  const m = repoUrl.trim().match(/github\.com[:/]+([^/]+)\/([^/\s#]+?)(?:\.git)?(?:[/#?].*)?$/i);
+  if (!m) throw new Error("Invalid GitHub URL — expected https://github.com/owner/repo");
+  const [, owner, repo] = m;
+  const headers: Record<string, string> = { "user-agent": "orbixa-deploy-bot", accept: "application/vnd.github+json" };
+  if (process.env.GITHUB_TOKEN) headers.authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  const metaRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers, cache: "no-store" });
+  if (!metaRes.ok) throw new Error(`GitHub API: ${metaRes.status} — ${metaRes.status === 404 ? "repository not found (private repos need GITHUB_TOKEN)" : metaRes.statusText}`);
+  const meta = (await metaRes.json()) as { default_branch: string };
+  const branch = meta.default_branch || "main";
+  const zipRes = await fetch(`https://codeload.github.com/${owner}/${repo}/zip/refs/heads/${branch}`, { headers, cache: "no-store" });
+  if (!zipRes.ok) throw new Error(`Failed to download archive (${zipRes.status})`);
+  const buf = Buffer.from(await zipRes.arrayBuffer());
+  return { buf, label: `${owner}/${repo}#${branch}` };
+}

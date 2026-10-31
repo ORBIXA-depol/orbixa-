@@ -1,0 +1,53 @@
+"use client";
+
+import { useEffect, useState, useCallback, type ReactNode } from "react";
+import { Moon, Sun } from "lucide-react";
+
+export function useTheme() {
+  const [theme, setThemeState] = useState<"dark" | "light">("dark");
+  useEffect(() => {
+    const t = document.documentElement.getAttribute("data-theme");
+    if (t === "light") setThemeState("light");
+  }, []);
+  const setTheme = useCallback((t: "dark" | "light") => {
+    setThemeState(t);
+    if (t === "light") document.documentElement.setAttribute("data-theme", "light");
+    else document.documentElement.removeAttribute("data-theme");
+    try {
+      localStorage.setItem("orbixa-theme", t);
+    } catch { /* ignore */ }
+  }, []);
+  return { theme, setTheme };
+}
+
+export function ThemeToggle({ className = "" }: { className?: string }) {
+  const { theme, setTheme } = useTheme();
+  return (
+    <button
+      aria-label="Toggle theme"
+      onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+      className={`w-9 h-9 rounded-xl grid place-items-center border border-[var(--line-strong)] text-[var(--muted)] hover:text-[var(--text)] hover:border-[var(--violet)] transition-all ${className}`}
+    >
+      {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+    </button>
+  );
+}
+
+/** IntersectionObserver-based scroll reveal wrapper. */
+export function Reveal({ children, delay = 0, className = "" }: { children: ReactNode; delay?: number; className?: string }) {
+  const [ref, setRef] = useState<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!ref) return;
+    const io = new IntersectionObserver(
+      (entries) => entries.forEach((e) => e.isIntersecting && e.target.classList.add("in")),
+      { threshold: 0.12 },
+    );
+    io.observe(ref);
+    return () => io.disconnect();
+  }, [ref]);
+  return (
+    <div ref={setRef} className={`reveal ${className}`} style={{ transitionDelay: `${delay}ms` }}>
+      {children}
+    </div>
+  );
+}

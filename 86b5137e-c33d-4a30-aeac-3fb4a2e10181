@@ -1,0 +1,41 @@
+import { NextRequest } from "next/server";
+import { db } from "@/db";
+import { projects, activities } from "@/db/schema";
+import { and, eq } from "drizzle-orm";
+import { requireUser, json, rateLimit } from "@/lib/auth";
+
+export const runtime = "nodejs";
+type Ctx = { params: Promise<{ id: string }> };
+
+/**
+ * Purges edge cache for the project. With the built-in delivery layer this
+ * resets asset freshness counters immediately; when a CDN is attached via
+ * CLOUDFLARE_ZONE_ID + CLOUDFLARE_API_TOKEN the purge is forwarded upstream.
+ */
+export async function POST(_req: NextRequest, ctx: Ctx) {
+  const user = await requireUser();
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  if (!rateLimit(`cache:${user.id}`, 20, 60_000)) return json({ error: "Rate limit reached." }, 429);
+  const { id } = await ctx.params;
+  const rows = await db.select().from(projects).where(and(eq(projects.id, id), eq(projects.ownerId, user.id))).limit(1);
+  if (!rows[0]) return json({ error: "Project not found." }, 404);
+
+  let upstream = "builtin";
+  const zoneId = process.env.CLOUDFLARE_ZONE_ID;
+  const cfToken = process.env.CLOUDFLARE_API_TOKEN;
+  if (zoneId && cfToken) {
+    try {
+      const res = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/purge_cache`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${cfToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ purge_everything: true }),
+      });
+      upstream = res.ok ? "cloudflare:purged" : "cloudflare:failed";
+    } catch {
+      upstream = "cloudflare:unreachable";
+    }
+  }
+  await db.insert(activities).values({ userId: user.id, projectId: id, action: "cache.purged", detail: `Cache invalidated (${upstream})` });
+  await db.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, id));
+  return json({ ok: true, purged: upstream });
+}

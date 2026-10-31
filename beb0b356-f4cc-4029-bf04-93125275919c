@@ -1,0 +1,163 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { useState, type ReactNode } from "react";
+import { Logo, OrbMark } from "@/components/logo";
+import { ThemeToggle } from "@/components/theme";
+import { Avatar } from "@/components/ui";
+import { useEffect } from "react";
+import {
+  LayoutDashboard, Rocket, Users, CreditCard, Settings, LogOut, Search,
+  ShieldCheck, Menu, X, Plus, ExternalLink, Scale,
+} from "lucide-react";
+
+type U = { id: string; name: string; email: string; role: string; avatarHue: number; emailVerified: boolean };
+
+const NAV = [
+  { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
+  { href: "/dashboard/new", label: "New Deployment", icon: Rocket },
+  { href: "/dashboard/team", label: "Team", icon: Users },
+  { href: "/dashboard/billing", label: "Billing", icon: CreditCard },
+  { href: "/dashboard/settings", label: "Settings", icon: Settings },
+];
+
+export function DashboardShell({ user, children }: { user: U; children: ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [pendingPolicies, setPendingPolicies] = useState<{ slug: string; title: string; version: string }[]>([]);
+  const [policyMsg, setPolicyMsg] = useState("");
+
+  useEffect(() => {
+    let dismissed = false;
+    try { dismissed = sessionStorage.getItem("orbixa-policy-banner-hide") === "1"; } catch { /* ignore */ }
+    if (dismissed) return;
+    fetch("/api/legal/status", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.pending?.length) setPendingPolicies(d.pending); })
+      .catch(() => {});
+  }, []);
+
+  const navItem = (n: (typeof NAV)[number]) => {
+    const active = pathname === n.href || (n.href !== "/dashboard" && pathname.startsWith(n.href));
+    return (
+      <Link
+        key={n.href}
+        href={n.href}
+        onClick={() => setOpen(false)}
+        className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${
+          active ? "text-[var(--text)]" : "text-[var(--muted)] hover:text-[var(--text)] hover:bg-[rgba(124,92,255,.06)]"
+        }`}
+        style={active ? { background: "linear-gradient(90deg, rgba(124,92,255,.16), rgba(124,92,255,.04))", boxShadow: "inset 0 0 0 1px rgba(124,92,255,.25)" } : {}}
+      >
+        <n.icon size={17} style={active ? { color: "var(--violet-2)" } : {}} />
+        {n.label}
+      </Link>
+    );
+  };
+
+  return (
+    <div className="min-h-screen flex">
+      {/* Sidebar */}
+      <aside className={`fixed inset-y-0 left-0 z-40 w-64 p-5 flex flex-col border-r border-[var(--line)] transition-transform duration-300 lg:translate-x-0 ${open ? "translate-x-0" : "-translate-x-full"}`} style={{ background: "var(--bg-2)" }}>
+        <div className="flex items-center justify-between mb-8">
+          <Link href="/dashboard"><Logo size={30} /></Link>
+          <button className="lg:hidden text-[var(--faint)]" onClick={() => setOpen(false)}><X size={18} /></button>
+        </div>
+        <nav className="space-y-1.5 flex-1">
+          {NAV.map(navItem)}
+          {user.role === "admin" && (
+            <Link href="/admin" className="flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium text-[var(--amber)] hover:bg-[rgba(251,191,36,.08)] transition-all mt-4">
+              <ShieldCheck size={17} /> Admin Console
+            </Link>
+          )}
+        </nav>
+        <Link href="/dashboard/new" className="btn btn-primary w-full mb-5"><Plus size={16} /> New Project</Link>
+        <div className="card !rounded-xl p-3 flex items-center gap-3">
+          <Avatar name={user.name} hue={user.avatarHue} size={34} />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold truncate">{user.name}</div>
+            <div className="text-[11px] text-[var(--faint)] truncate">{user.email}</div>
+          </div>
+          <button
+            aria-label="Sign out"
+            className="text-[var(--faint)] hover:text-[var(--red)] transition-colors"
+            onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }); router.push("/"); }}
+          >
+            <LogOut size={16} />
+          </button>
+        </div>
+      </aside>
+      {open && <div className="fixed inset-0 bg-black/60 z-30 lg:hidden" onClick={() => setOpen(false)} />}
+
+      {/* Main */}
+      <div className="flex-1 lg:ml-64 min-w-0">
+        <header className="sticky top-0 z-20 glass border-b border-[var(--line)] px-4 sm:px-7 h-16 flex items-center gap-3">
+          <button className="lg:hidden text-[var(--muted)]" onClick={() => setOpen(true)}><Menu size={20} /></button>
+          <div className="lg:hidden"><OrbMark size={26} /></div>
+          <form
+            className="relative flex-1 max-w-md"
+            onSubmit={(e) => {
+              e.preventDefault();
+              router.push(`/dashboard?q=${encodeURIComponent(q)}`);
+            }}
+          >
+            <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--faint)]" />
+            <input className="input !pl-10 !py-2 !text-[13px]" placeholder="Search projects…  ( ↵ )" value={q} onChange={(e) => setQ(e.target.value)} />
+          </form>
+          <div className="ml-auto flex items-center gap-2.5">
+            {!user.emailVerified && (
+              <button
+                className="hidden sm:inline-flex chip !text-[10px] !text-[var(--amber)] !border-[rgba(251,191,36,.35)] hover:bg-[rgba(251,191,36,.08)]"
+                onClick={async () => {
+                  const r = await fetch("/api/auth/verify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: user.email }) });
+                  const d = await r.json();
+                  if (d.verifyUrl) window.location.href = d.verifyUrl;
+                  else alert("Verification email queued. Check your inbox (or the admin mail outbox on dev instances).");
+                }}
+              >
+                VERIFY EMAIL
+              </button>
+            )}
+            <a href="/api/health" target="_blank" className="chip !text-[9px] hidden md:inline-flex" rel="noreferrer">
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--green)]" /> OPERATIONAL <ExternalLink size={9} />
+            </a>
+            <ThemeToggle />
+          </div>
+        </header>
+        {pendingPolicies.length > 0 && (
+          <div className="mx-4 sm:mx-7 mt-4 rounded-2xl border border-[rgba(124,92,255,.35)] p-4 sm:px-5 flex flex-wrap items-center gap-3" style={{ background: "linear-gradient(90deg, rgba(124,92,255,.12), rgba(56,189,248,.06))" }}>
+            <Scale size={16} className="text-[var(--violet-2)] shrink-0" />
+            <p className="text-[13px] text-[var(--text)] flex-1 min-w-[220px]">
+              <b>Policy update:</b> {pendingPolicies.map((p) => p.title).join(", ")} {pendingPolicies.length === 1 ? "has" : "have"} been updated to {pendingPolicies.map((p) => `v${p.version}`).join(", ")}. Please review and accept to keep deploying.
+            </p>
+            <div className="flex items-center gap-2">
+              <Link href="/legal" className="btn btn-ghost !py-2 !text-xs">Review</Link>
+              <button
+                className="btn btn-primary !py-2 !text-xs"
+                onClick={async () => {
+                  const r = await fetch("/api/legal/accept", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ policies: pendingPolicies.map((p) => ({ slug: p.slug, version: p.version })), source: "banner" }) });
+                  if (r.ok) setPendingPolicies([]);
+                  else setPolicyMsg("Couldn't record acceptance — try again.");
+                }}
+              >
+                Accept All
+              </button>
+              <button
+                aria-label="Dismiss for this session"
+                className="text-[var(--faint)] hover:text-[var(--text)]"
+                onClick={() => { setPendingPolicies([]); try { sessionStorage.setItem("orbixa-policy-banner-hide", "1"); } catch { /* ignore */ } }}
+              >
+                <X size={15} />
+              </button>
+            </div>
+            {policyMsg && <p className="w-full text-xs text-[var(--red)]">{policyMsg}</p>}
+          </div>
+        )}
+        <main className="p-4 sm:p-7 max-w-[1400px] mx-auto">{children}</main>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,36 @@
+import { NextRequest } from "next/server";
+import { db } from "@/db";
+import { deployments, projects, activities } from "@/db/schema";
+import { and, eq } from "drizzle-orm";
+import { requireUser, json } from "@/lib/auth";
+import { storagePaths } from "@/lib/storage";
+import fs from "fs/promises";
+
+export const runtime = "nodejs";
+type Ctx = { params: Promise<{ id: string }> };
+
+/** Instant rollback: repoints live traffic to a previous ready deployment. */
+export async function POST(_req: NextRequest, ctx: Ctx) {
+  const user = await requireUser();
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const { id } = await ctx.params;
+  const rows = await db
+    .select({ deployment: deployments, project: projects })
+    .from(deployments)
+    .innerJoin(projects, eq(deployments.projectId, projects.id))
+    .where(and(eq(deployments.id, id), eq(projects.ownerId, user.id)))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return json({ error: "Deployment not found." }, 404);
+  if (row.deployment.status !== "ready") return json({ error: "Only successful deployments can be restored." }, 400);
+  try {
+    await fs.stat(storagePaths.deploymentDir(id));
+  } catch {
+    return json({ error: "Deployment artifacts were pruned from storage; redeploy instead." }, 410);
+  }
+  await db.update(deployments).set({ isActive: false }).where(eq(deployments.projectId, row.project.id));
+  await db.update(deployments).set({ isActive: true }).where(eq(deployments.id, id));
+  await db.update(projects).set({ activeDeploymentId: id, status: "ready", updatedAt: new Date() }).where(eq(projects.id, row.project.id));
+  await db.insert(activities).values({ userId: user.id, projectId: row.project.id, action: "deployment.rollback", detail: `Rolled back to v${row.deployment.version}` });
+  return json({ ok: true, activeDeploymentId: id, siteUrl: `/sites/${row.project.slug}/` });
+}

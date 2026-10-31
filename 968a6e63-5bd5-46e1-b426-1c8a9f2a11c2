@@ -1,0 +1,100 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+import { SiteNav } from "@/components/site-nav";
+import { SiteFooter } from "@/components/site-footer";
+import { PolicySearch } from "@/components/legal/search";
+import { POLICIES, currentVersion, lastUpdated, LEGAL_CONTACTS } from "@/lib/legal";
+import { Scale, Mail, FileDown, ShieldCheck, History, ArrowRight } from "lucide-react";
+
+export const metadata: Metadata = {
+  title: "Legal Center",
+  description: "Every ORBIXA policy in one place: Terms of Service, Privacy, Acceptable Use, SLA, security standards and more — versioned, searchable and downloadable.",
+};
+
+const GROUPS: { label: string; slugs: string[] }[] = [
+  { label: "Foundations", slugs: ["terms-of-service", "acceptable-use-policy", "privacy-policy", "cookie-policy"] },
+  { label: "Platform & Operations", slugs: ["security-infrastructure-policy", "deployment-hosting-policy", "service-level-agreement", "resource-usage-policy"] },
+  { label: "Rights & Enforcement", slugs: ["copyright-dmca-policy", "data-protection-policy", "enforcement-policy", "responsible-disclosure-policy"] },
+  { label: "Commercial & Special Topics", slugs: ["refund-cancellation-policy", "third-party-services-policy", "law-enforcement-requests-policy", "childrens-privacy-policy", "ai-automation-policy"] },
+];
+
+export default function LegalCenterPage() {
+  return (
+    <main className="relative min-h-screen">
+      <SiteNav />
+      <section className="relative pt-36 pb-14 overflow-hidden">
+        <div className="absolute inset-0 bg-grid" style={{ maskImage: "radial-gradient(ellipse 70% 60% at 50% 0%, black 20%, transparent 75%)" }} />
+        <div className="absolute -top-24 left-1/2 -translate-x-1/2 w-[560px] h-[360px] aurora" style={{ background: "radial-gradient(circle, rgba(124,92,255,.14), transparent 65%)" }} />
+        <div className="relative max-w-4xl mx-auto px-6 text-center">
+          <div className="inline-flex items-center gap-2 chip !py-1.5 !px-3.5 mb-6 !text-[10px]"><Scale size={12} className="text-[var(--violet-2)]" /> ORBIXA LEGAL CENTER</div>
+          <h1 className="font-display font-bold tracking-tight text-[clamp(2.2rem,5vw,3.6rem)] leading-tight">
+            Transparent rules. <span className="grad-text">Enforced fairly.</span>
+          </h1>
+          <p className="mt-5 text-[var(--muted)] max-w-2xl mx-auto leading-relaxed">
+            Every policy governing the ORBIXA platform lives here — originally drafted, dated, versioned and downloadable.
+            {POLICIES.length} documents, zero fine-print games.
+          </p>
+          <div className="mt-9"><PolicySearch /></div>
+        </div>
+      </section>
+
+      <section className="max-w-7xl mx-auto px-6 pb-8 space-y-14">
+        {GROUPS.map((g) => (
+          <div key={g.label}>
+            <div className="flex items-center gap-3 mb-5">
+              <h2 className="font-display font-semibold text-lg tracking-tight">{g.label}</h2>
+              <span className="flex-1 h-px bg-[var(--line)]" />
+              <span className="chip !text-[9px]">{g.slugs.length}</span>
+            </div>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {g.slugs.map((slug) => {
+                const p = POLICIES.find((x) => x.slug === slug)!;
+                return (
+                  <Link key={slug} href={`/legal/${slug}`} className="card card-hover p-5 group flex flex-col">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-[9.5px] font-code font-bold tracking-[0.14em] text-[var(--violet-2)] uppercase">{p.kicker}</span>
+                      <ArrowRight size={14} className="text-[var(--faint)] group-hover:text-[var(--violet-2)] group-hover:translate-x-0.5 transition-all" />
+                    </div>
+                    <h3 className="font-display font-semibold text-[15px] leading-snug">{p.title}</h3>
+                    <p className="text-[12px] text-[var(--muted)] leading-relaxed mt-2 line-clamp-3 flex-1">{p.summary}</p>
+                    <div className="flex items-center gap-3 mt-4 pt-3 border-t border-[var(--line)] text-[10px] text-[var(--faint)] font-code">
+                      <span>v{currentVersion(p)}</span>
+                      <span className="flex items-center gap-1"><History size={10} /> {lastUpdated(p)}</span>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section className="max-w-7xl mx-auto px-6 pb-4">
+        <div className="card p-7 grid md:grid-cols-3 gap-7">
+          <div>
+            <h3 className="font-display font-semibold flex items-center gap-2"><ShieldCheck size={16} className="text-[var(--green)]" /> Drafted for trust</h3>
+            <p className="text-[13px] text-[var(--muted)] mt-2 leading-relaxed">
+              These documents are original works written for ORBIXA, reviewed against Indian law (incl. the DPDP Act, 2023) and major-jurisdiction expectations, and prepared for formal counsel review before publication. We never claim certifications or guarantees we have not established.
+            </p>
+          </div>
+          <div>
+            <h3 className="font-display font-semibold flex items-center gap-2"><FileDown size={16} className="text-[var(--violet-2)]" /> Downloads & versioning</h3>
+            <p className="text-[13px] text-[var(--muted)] mt-2 leading-relaxed">
+              Every policy page offers a Markdown download and shows its complete version history with change notes. Material changes are announced in-product 14 days ahead where required.
+            </p>
+          </div>
+          <div>
+            <h3 className="font-display font-semibold flex items-center gap-2"><Mail size={16} className="text-[var(--blue)]" /> Talk to a human</h3>
+            <ul className="text-[13px] text-[var(--muted)] mt-2 space-y-1.5">
+              <li>Legal: <a className="text-[var(--violet-2)] hover:underline" href={`mailto:${LEGAL_CONTACTS.legal}`}>{LEGAL_CONTACTS.legal}</a></li>
+              <li>Privacy: <a className="text-[var(--violet-2)] hover:underline" href={`mailto:${LEGAL_CONTACTS.privacy}`}>{LEGAL_CONTACTS.privacy}</a></li>
+              <li>Security: <a className="text-[var(--violet-2)] hover:underline" href={`mailto:${LEGAL_CONTACTS.security}`}>{LEGAL_CONTACTS.security}</a></li>
+              <li>Abuse: <a className="text-[var(--violet-2)] hover:underline" href={`mailto:${LEGAL_CONTACTS.abuse}`}>{LEGAL_CONTACTS.abuse}</a></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+      <SiteFooter />
+    </main>
+  );
+}

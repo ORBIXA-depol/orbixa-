@@ -1,0 +1,62 @@
+import { db } from "@/db";
+import { projects, deployments, activities, subscriptions, plans } from "@/db/schema";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { requireUser, json } from "@/lib/auth";
+import { usageForOwner } from "@/lib/analytics";
+import { currentStorageBytes } from "@/lib/launch";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  const user = await requireUser();
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const monthStart = new Date();
+  monthStart.setUTCDate(1);
+  monthStart.setUTCHours(0, 0, 0, 0);
+
+  const projectRows = await db
+    .select({ project: projects, activeDeployment: deployments })
+    .from(projects)
+    .leftJoin(deployments, eq(projects.activeDeploymentId, deployments.id))
+    .where(eq(projects.ownerId, user.id))
+    .orderBy(desc(projects.updatedAt))
+    .limit(6);
+
+  const totals = await db
+    .select({
+      deploymentsThisMonth: sql<number>`count(*) filter (where ${deployments.createdAt} >= ${monthStart})`,
+      readyDeployments: sql<number>`count(*) filter (where ${deployments.status} = 'ready')`,
+    })
+    .from(deployments)
+    .innerJoin(projects, eq(deployments.projectId, projects.id))
+    .where(eq(projects.ownerId, user.id));
+
+  const usage = await usageForOwner(user.id);
+  const storageBytes = await currentStorageBytes(user.id);
+  const sub = await db.select().from(subscriptions).where(eq(subscriptions.userId, user.id)).orderBy(desc(subscriptions.createdAt)).limit(1);
+  const planRows = await db.select().from(plans).where(eq(plans.id, sub[0]?.planId ?? "free")).limit(1);
+  const recentActivity = await db
+    .select()
+    .from(activities)
+    .where(eq(activities.userId, user.id))
+    .orderBy(desc(activities.createdAt))
+    .limit(12);
+
+  const projectCount = await db.select({ count: sql<number>`count(*)` }).from(projects).where(and(eq(projects.ownerId, user.id)));
+
+  return json({
+    projects: projectRows.map((r) => ({ ...r.project, activeDeployment: r.activeDeployment })),
+    stats: {
+      projects: Number(projectCount[0]?.count ?? 0),
+      deploymentsThisMonth: Number(totals[0]?.deploymentsThisMonth ?? 0),
+      readyDeployments: Number(totals[0]?.readyDeployments ?? 0),
+      pageviewsThisMonth: usage.pageviewsThisMonth,
+      bandwidthThisMonth: usage.bandwidthThisMonth,
+      storageBytes,
+    },
+    plan: planRows[0] ?? null,
+    subscription: sub[0] ?? null,
+    recentActivity,
+  });
+}

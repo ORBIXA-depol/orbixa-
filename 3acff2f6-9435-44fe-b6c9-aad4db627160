@@ -1,0 +1,68 @@
+import crypto from "crypto";
+
+export const uid = () => crypto.randomUUID();
+export const randomToken = (bytes = 24) => crypto.randomBytes(bytes).toString("base64url");
+
+export function slugify(name: string) {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40) || "site";
+}
+
+export function fmtBytes(n: number) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  return `${(n / 1024 ** 3).toFixed(2)} GB`;
+}
+
+export function fmtNum(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString("en-US");
+}
+
+export function timeAgo(d: Date | string) {
+  const s = Math.floor((Date.now() - new Date(d).getTime()) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+const MIME: Record<string, string> = {
+  html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8",
+  css: "text/css; charset=utf-8", js: "application/javascript; charset=utf-8",
+  mjs: "application/javascript; charset=utf-8", map: "application/json",
+  json: "application/json", xml: "application/xml",
+  svg: "image/svg+xml", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+  gif: "image/gif", webp: "image/webp", avif: "image/avif", ico: "image/x-icon",
+  woff: "font/woff", woff2: "font/woff2", ttf: "font/ttf", otf: "font/otf",
+  mp4: "video/mp4", webm: "video/webm", mp3: "audio/mpeg", wav: "audio/wav",
+  pdf: "application/pdf", txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8",
+  wasm: "application/wasm", webmanifest: "application/manifest+json",
+};
+
+export function mimeOf(path: string) {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return MIME[ext] ?? "application/octet-stream";
+}
+
+export function classifySource(referrer: string | null): string {
+  if (!referrer) return "direct";
+  const r = referrer.toLowerCase();
+  if (/google|bing|duckduckgo|yahoo|baidu|brave/.test(r)) return "search";
+  if (/twitter|x\.com|facebook|instagram|linkedin|reddit|tiktok|threads|mastodon/.test(r)) return "social";
+  return "referral";
+}
+
+export function deviceOf(ua: string | null): string {
+  if (!ua) return "unknown";
+  if (/bot|crawler|spider/i.test(ua)) return "bot";
+  if (/mobile|iphone|android.*mobile/i.test(ua)) return "mobile";
+  if (/ipad|tablet|android/i.test(ua)) return "tablet";
+  return "desktop";
+}

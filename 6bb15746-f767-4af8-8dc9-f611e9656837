@@ -1,0 +1,41 @@
+import { NextRequest } from "next/server";
+import { recordEvent } from "@/lib/analytics";
+import { rateLimit } from "@/lib/auth";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+/** Lightweight analytics beacon injected into every published site. */
+async function beacon(req: NextRequest) {
+  const p = req.nextUrl.searchParams.get("p");
+  if (!p) return new Response(null, { status: 204 });
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "0.0.0.0";
+  if (!rateLimit(`beacon:${ip}`, 240, 60_000)) return new Response(null, { status: 204 });
+  const path = (req.nextUrl.searchParams.get("path") ?? "/").slice(0, 300);
+  const ref = req.nextUrl.searchParams.get("ref") || null;
+  const country =
+    req.headers.get("cf-ipcountry") ||
+    req.headers.get("x-vercel-ip-country") ||
+    req.headers.get("x-country-code") ||
+    null;
+  void recordEvent({
+    projectId: p,
+    type: "pageview",
+    path,
+    referrer: ref,
+    country,
+    ip,
+    ua: req.headers.get("user-agent"),
+  });
+  return new Response(null, {
+    status: 204,
+    headers: { "cache-control": "no-store", "access-control-allow-origin": "*" },
+  });
+}
+
+export async function GET(req: NextRequest) {
+  return beacon(req);
+}
+export async function POST(req: NextRequest) {
+  return beacon(req);
+}

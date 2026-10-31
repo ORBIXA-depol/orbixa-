@@ -1,0 +1,46 @@
+export function OrbMark({ size = 34, className = "" }: { size?: number; className?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" fill="none" className={className} aria-label="ORBIXA">
+      <defs>
+        <linearGradient id="orb-g" x1="0" y1="0" x2="64" y2="64">
+          <stop offset="0%" stopColor="#a78bfa" />
+          <stop offset="55%" stopColor="#7c5cff" />
+          <stop offset="100%" stopColor="#38bdf8" />
+        </linearGradient>
+        <radialGradient id="orb-core" cx="50%" cy="45%" r="60%">
+          <stop offset="0%" stopColor="#c4b5fd" />
+          <stop offset="70%" stopColor="#7c5cff" />
+          <stop offset="100%" stopColor="#4c1d95" />
+        </radialGradient>
+      </defs>
+      {/* orbital rings */}
+      <ellipse cx="32" cy="32" rx="28" ry="11" stroke="url(#orb-g)" strokeWidth="2.4" transform="rotate(-24 32 32)" fill="none" />
+      <ellipse cx="32" cy="32" rx="28" ry="11" stroke="url(#orb-g)" strokeWidth="1.4" opacity="0.45" transform="rotate(38 32 32)" fill="none" />
+      {/* core planet */}
+      <circle cx="32" cy="32" r="11.5" fill="url(#orb-core)" />
+      <circle cx="28" cy="27.5" r="3.4" fill="#ffffff" opacity="0.32" />
+      {/* satellite */}
+      <circle cx="55.5" cy="20.5" r="3" fill="#38bdf8" />
+      <circle cx="55.5" cy="20.5" r="5.4" stroke="#38bdf8" strokeOpacity="0.5" strokeWidth="1" fill="none" />
+    </svg>
+  );
+}
+
+export function Logo({ size = 34, withWordmark = true }: { size?: number; withWordmark?: boolean }) {
+  return (
+    <span className="inline-flex items-center gap-2.5 select-none">
+      <span className="relative">
+        <OrbMark size={size} />
+        <span
+          className="absolute inset-0 rounded-full -z-10 blur-md"
+          style={{ background: "radial-gradient(circle, rgba(124,92,255,.55), transparent 70%)" }}
+        />
+      </span>
+      {withWordmark && (
+        <span className="font-display font-bold tracking-[0.18em]" style={{ fontSize: size * 0.52 }}>
+          ORBIXA
+        </span>
+      )}
+    </span>
+  );
+}

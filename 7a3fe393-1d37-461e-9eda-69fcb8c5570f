@@ -1,0 +1,49 @@
+import { NextRequest } from "next/server";
+import { db } from "@/db";
+import { policyAcceptances } from "@/db/schema";
+import { and, eq } from "drizzle-orm";
+import { currentUser, json, clientIp } from "@/lib/auth";
+import { BINDING_POLICY_IDS, getPolicy, currentVersion } from "@/lib/legal";
+
+export const runtime = "nodejs";
+
+/** Records user acceptance of binding policies at their current versions. Idempotent. */
+export async function POST(req: NextRequest) {
+  const user = await currentUser();
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  let body: { policies?: { slug: string; version?: string }[]; source?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid request body." }, 400);
+  }
+  const ip = clientIp(req);
+  const ua = req.headers.get("user-agent")?.slice(0, 300) ?? null;
+  const requested: { slug: string; version?: string }[] = body.policies?.length
+    ? body.policies
+    : BINDING_POLICY_IDS.map((slug) => ({ slug })); // default: accept all binding policies
+  const saved: { slug: string; version: string }[] = [];
+  for (const item of requested) {
+    const p = getPolicy(item.slug);
+    if (!p) continue;
+    const version = item.version ?? currentVersion(p);
+    const valid = p.history.some((h) => h.version === version);
+    if (!valid) continue;
+    const existing = await db
+      .select({ id: policyAcceptances.id })
+      .from(policyAcceptances)
+      .where(and(eq(policyAcceptances.userId, user.id), eq(policyAcceptances.policyId, p.slug), eq(policyAcceptances.version, version)))
+      .limit(1);
+    if (existing[0]) continue;
+    await db.insert(policyAcceptances).values({
+      userId: user.id,
+      policyId: p.slug,
+      version,
+      source: body.source === "signup" ? "signup" : body.source === "settings" ? "settings" : "banner",
+      ip,
+      userAgent: ua,
+    });
+    saved.push({ slug: p.slug, version });
+  }
+  return json({ ok: true, accepted: saved });
+}

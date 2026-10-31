@@ -1,0 +1,37 @@
+import { NextRequest } from "next/server";
+import { db } from "@/db";
+import { authTokens, users } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { json, rateLimit, clientIp, logSecurity } from "@/lib/auth";
+import { randomToken } from "@/lib/utils";
+import { sendEmail, appBaseUrl } from "@/lib/email";
+
+export const runtime = "nodejs";
+
+export async function POST(req: NextRequest) {
+  const ip = clientIp(req);
+  if (!rateLimit(`forgot:${ip}`, 5, 60_000)) return json({ error: "Too many attempts. Try again shortly." }, 429);
+  let body: { email?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid request." }, 400);
+  }
+  const email = (body.email ?? "").trim().toLowerCase();
+  const rows = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  const user = rows[0];
+  // Always respond ok — never leak whether an account exists.
+  if (!user) return json({ ok: true });
+  const token = randomToken(32);
+  await db.insert(authTokens).values({
+    userId: user.id,
+    type: "reset_password",
+    token,
+    expiresAt: new Date(Date.now() + 1000 * 60 * 30),
+  });
+  const base = appBaseUrl() || req.nextUrl.origin;
+  const link = `${base}/reset?token=${token}`;
+  const mail = await sendEmail(email, "Reset your ORBIXA password", `Reset your password (valid 30 minutes):\n${link}\n\nIf you did not request this, ignore this email.`);
+  await logSecurity("password.reset.requested", ip, email, user.id);
+  return json({ ok: true, emailDelivery: mail.delivered ? "smtp" : "outbox", resetUrl: mail.delivered ? undefined : link });
+}

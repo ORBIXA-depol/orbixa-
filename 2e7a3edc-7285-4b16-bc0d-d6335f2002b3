@@ -1,0 +1,73 @@
+import { NextRequest } from "next/server";
+import { db } from "@/db";
+import { projects, deployments, subscriptions, plans, activities } from "@/db/schema";
+import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
+import { requireUser, json } from "@/lib/auth";
+import { slugify, randomToken } from "@/lib/utils";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET(req: NextRequest) {
+  const user = await requireUser();
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const q = req.nextUrl.searchParams.get("q")?.trim() ?? "";
+  const status = req.nextUrl.searchParams.get("status") ?? "";
+  const framework = req.nextUrl.searchParams.get("framework") ?? "";
+
+  const conds = [eq(projects.ownerId, user.id)];
+  if (q) conds.push(or(ilike(projects.name, `%${q}%`), ilike(projects.slug, `%${q}%`))!);
+  if (status && status !== "all") conds.push(eq(projects.status, status));
+  if (framework && framework !== "all") conds.push(eq(projects.framework, framework));
+
+  const rows = await db
+    .select({
+      project: projects,
+      activeDeployment: deployments,
+    })
+    .from(projects)
+    .leftJoin(deployments, eq(projects.activeDeploymentId, deployments.id))
+    .where(and(...conds))
+    .orderBy(desc(projects.updatedAt))
+    .limit(200);
+
+  return json({ projects: rows.map((r) => ({ ...r.project, activeDeployment: r.activeDeployment })) });
+}
+
+export async function POST(req: NextRequest) {
+  const user = await requireUser();
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  let body: { name?: string; source?: string; repoUrl?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid request body." }, 400);
+  }
+  const name = (body.name ?? "").trim().slice(0, 60);
+  if (!name) return json({ error: "Project name is required." }, 400);
+
+  const sub = await db.select().from(subscriptions).where(eq(subscriptions.userId, user.id)).orderBy(desc(subscriptions.createdAt)).limit(1);
+  const planRows = await db.select().from(plans).where(eq(plans.id, sub[0]?.planId ?? "free")).limit(1);
+  const plan = planRows[0];
+  const countRows = await db.select({ count: sql<number>`count(*)` }).from(projects).where(eq(projects.ownerId, user.id));
+  if (plan && Number(countRows[0]?.count ?? 0) >= plan.maxProjects) {
+    return json({ error: `Your ${plan.name} plan allows ${plan.maxProjects} project(s). Upgrade to create more.` }, 402);
+  }
+
+  const base = slugify(name);
+  let slug = base;
+  for (let i = 0; i < 6; i++) {
+    const clash = await db.select({ id: projects.id }).from(projects).where(eq(projects.slug, slug)).limit(1);
+    if (!clash[0]) break;
+    slug = `${base}-${randomToken(3)}`;
+  }
+  const created = await db.insert(projects).values({
+    ownerId: user.id,
+    name,
+    slug,
+    source: body.source === "github" || body.source === "git" ? body.source : "upload",
+    repoUrl: body.repoUrl?.slice(0, 300) ?? null,
+  }).returning();
+  await db.insert(activities).values({ userId: user.id, projectId: created[0].id, action: "project.created", detail: `Created project “${name}”` });
+  return json({ project: created[0] }, 201);
+}

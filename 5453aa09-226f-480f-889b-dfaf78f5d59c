@@ -1,0 +1,678 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  ExternalLink, RefreshCw, RotateCcw, History, BarChart3, Globe, Zap, KeyRound,
+  Settings as SettingsIcon, Copy, Check, Eye, EyeOff, Trash2, Plus, PlayCircle,
+  TerminalSquare, ArrowRightLeft, Eraser, ShieldAlert, XCircle, CheckCircle2,
+} from "lucide-react";
+import { StatusBadge, FrameworkBadge, EmptyState, Modal } from "@/components/ui";
+import { AreaChart, Donut } from "@/components/charts";
+import { DeployWidget } from "./deploy-widget";
+import { fmtBytes, timeAgo } from "@/lib/utils";
+
+type Deployment = {
+  id: string; version: number; status: string; source: string; sourceMeta: string | null;
+  framework: string; fileCount: number; totalBytes: number; durationMs: number | null;
+  isActive: boolean; createdAt: string; buildLog: string; error: string | null;
+};
+type Project = {
+  id: string; name: string; slug: string; framework: string; status: string;
+  totalDeployments: number; spaFallback: boolean; activeDeploymentId: string | null;
+  repoUrl: string | null; createdAt: string; updatedAt: string;
+};
+type Analytics = {
+  series: { day: string; views: number; visitors: number; bandwidth: number; errors: number; avgMs: number }[];
+  totals: { views: number; visitors: number; bandwidth: number; errors: number; avgMs: number };
+  sources: { source: string; count: number }[];
+  countries: { country: string; count: number }[];
+  topPages: { path: string; count: number }[];
+  devices: { device: string; count: number }[];
+  recentErrors: { path: string | null; status: number | null; createdAt: string; count: number }[];
+};
+
+const TABS = [
+  { id: "overview", label: "Overview", icon: TerminalSquare },
+  { id: "deployments", label: "Deployments", icon: History },
+  { id: "analytics", label: "Analytics", icon: BarChart3 },
+  { id: "domains", label: "Domains", icon: Globe },
+  { id: "functions", label: "Functions", icon: Zap },
+  { id: "env", label: "Env Vars", icon: KeyRound },
+  { id: "settings", label: "Settings", icon: SettingsIcon },
+] as const;
+
+function CopyBtn({ text }: { text: string }) {
+  const [ok, setOk] = useState(false);
+  return (
+    <button
+      className="text-[var(--faint)] hover:text-[var(--text)] transition-colors"
+      onClick={() => { navigator.clipboard?.writeText(text); setOk(true); setTimeout(() => setOk(false), 1200); }}
+      aria-label="Copy"
+    >
+      {ok ? <Check size={13} className="text-[var(--green)]" /> : <Copy size={13} />}
+    </button>
+  );
+}
+
+export function ProjectDetail({ projectId }: { projectId: string }) {
+  const router = useRouter();
+  const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("overview");
+  const [project, setProject] = useState<Project | null>(null);
+  const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [loadErr, setLoadErr] = useState("");
+
+  const refresh = useCallback(async () => {
+    const res = await fetch(`/api/projects/${projectId}`, { cache: "no-store" });
+    if (res.status === 404) { setLoadErr("not found"); return; }
+    if (!res.ok) return;
+    const d = await res.json();
+    setProject(d.project);
+    setDeployments(d.deployments);
+  }, [projectId]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  if (loadErr) return <EmptyState icon={<XCircle size={22} />} title="Project not found" action={<button className="btn btn-ghost" onClick={() => router.push("/dashboard")}>Back to dashboard</button>} />;
+  if (!project) return <div className="space-y-4">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="skeleton h-24" />)}</div>;
+
+  const siteUrl = `/sites/${project.slug}/`;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="font-display font-bold text-2xl tracking-tight">{project.name}</h1>
+            <FrameworkBadge fw={project.framework} />
+            <StatusBadge status={project.status} />
+          </div>
+          <div className="flex items-center gap-2 mt-2 text-[13px] font-code text-[var(--muted)]">
+            <Globe size={13} className="text-[var(--violet-2)]" />
+            <span className="truncate">{siteUrl}</span>
+            <CopyBtn text={`${window.location.origin}${siteUrl}`} />
+            {project.activeDeploymentId && (
+              <a href={siteUrl} target="_blank" rel="noreferrer" className="text-[var(--violet-2)] hover:underline inline-flex items-center gap-1">
+                <ExternalLink size={12} /> Visit
+              </a>
+            )}
+          </div>
+        </div>
+        <div className="ml-auto flex items-center gap-2.5">
+          {project.activeDeploymentId && (
+            <button
+              className="btn btn-ghost !py-2 !text-xs"
+              onClick={async () => {
+                await fetch(`/api/deployments/${project.activeDeploymentId}/redeploy`, { method: "POST" });
+                setTab("deployments");
+                setTimeout(refresh, 500);
+              }}
+            >
+              <RefreshCw size={13} /> Redeploy Latest
+            </button>
+          )}
+          <button className="btn btn-primary !py-2 !text-xs" onClick={() => setTab("deployments")}>Deployments</button>
+        </div>
+      </div>
+
+      <div className="flex gap-1.5 overflow-x-auto border-b border-[var(--line)] pb-px">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`flex items-center gap-2 px-4 py-2.5 text-[13px] font-medium whitespace-nowrap border-b-2 transition-colors ${tab === t.id ? "border-[var(--violet)] text-[var(--text)]" : "border-transparent text-[var(--faint)] hover:text-[var(--muted)]"}`}
+          >
+            <t.icon size={14} /> {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "overview" && <OverviewTab project={project} deployments={deployments} onDeployClick={() => setTab("deployments")} />}
+      {tab === "deployments" && <DeploymentsTab project={project} deployments={deployments} refresh={refresh} />}
+      {tab === "analytics" && <AnalyticsTab projectId={project.id} />}
+      {tab === "domains" && <DomainsTab project={project} />}
+      {tab === "functions" && <FunctionsTab project={project} />}
+      {tab === "env" && <EnvTab projectId={project.id} />}
+      {tab === "settings" && <SettingsTab project={project} refresh={refresh} />}
+    </div>
+  );
+}
+
+/* -------------------------------- Overview ------------------------------- */
+
+function OverviewTab({ project, deployments, onDeployClick }: { project: Project; deployments: Deployment[]; onDeployClick: () => void }) {
+  const latest = deployments[0];
+  return (
+    <div className="grid lg:grid-cols-[1.5fr_1fr] gap-5 items-start">
+      <div className="space-y-5">
+        <div className="card p-6">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h3 className="font-display font-semibold">Deploy a new version</h3>
+            <span className="chip !text-[9px]">ZIP · GITHUB · GIT</span>
+          </div>
+          <div className="mt-5">
+            <DeployWidget projectId={project.id} slug={project.slug} />
+          </div>
+        </div>
+      </div>
+      <div className="space-y-5">
+        <div className="card p-6">
+          <h3 className="font-display font-semibold mb-4">Project</h3>
+          <dl className="space-y-3 text-[13px]">
+            {[
+              ["Framework", project.framework.toUpperCase()],
+              ["Deployments", String(project.totalDeployments)],
+              ["Created", new Date(project.createdAt).toLocaleDateString()],
+              ["SPA fallback", project.spaFallback ? "Enabled" : "Disabled"],
+              ["Repo", project.repoUrl ?? "—"],
+            ].map(([k, v]) => (
+              <div key={k} className="flex justify-between gap-4">
+                <dt className="text-[var(--faint)]">{k}</dt>
+                <dd className="text-right font-medium truncate max-w-[60%]">{v}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+        <div className="card p-6">
+          <h3 className="font-display font-semibold mb-3">Latest deployment</h3>
+          {latest ? (
+            <div className="space-y-2 text-[13px]">
+              <div className="flex items-center gap-2"><StatusBadge status={latest.status} /> <span className="font-code text-[var(--faint)]">v{latest.version}</span> <span className="text-[var(--faint)] ml-auto">{timeAgo(latest.createdAt)}</span></div>
+              {latest.error && <p className="text-[var(--red)] text-xs">{latest.error}</p>}
+              <button className="btn btn-ghost !py-2 !text-xs w-full mt-2" onClick={onDeployClick}>View deployment history</button>
+            </div>
+          ) : (
+            <p className="text-[13px] text-[var(--faint)]">Nothing deployed yet. Drop a ZIP on the left to go live.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------- Deployments ----------------------------- */
+
+function DeploymentsTab({ project, deployments, refresh }: { project: Project; deployments: Deployment[]; refresh: () => void }) {
+  const [openLog, setOpenLog] = useState<string | null>(null);
+  const [logText, setLogText] = useState("");
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const showLog = useCallback((id: string) => {
+    setOpenLog(id);
+    if (pollRef.current) clearInterval(pollRef.current);
+    const load = async () => {
+      const r = await fetch(`/api/deployments/${id}`, { cache: "no-store" });
+      if (r.ok) {
+        const d = await r.json();
+        setLogText(d.deployment.buildLog || d.deployment.error || "No logs recorded.");
+        if (d.deployment.status !== "building" && d.deployment.status !== "queued") {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
+          refresh();
+        }
+      }
+    };
+    load();
+    pollRef.current = setInterval(load, 1200);
+  }, [refresh]);
+
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  const act = async (id: string, action: "rollback" | "redeploy") => {
+    const res = await fetch(`/api/deployments/${id}/${action}`, { method: "POST" });
+    const d = await res.json();
+    if (!res.ok) alert(d.error ?? "Action failed");
+    setTimeout(refresh, 400);
+  };
+
+  if (deployments.length === 0) {
+    return <EmptyState icon={<History size={22} />} title="No deployments yet" hint="Deploy from the Overview tab to create your first version. Every deployment is versioned and can be rolled back instantly." />;
+  }
+  return (
+    <div className="space-y-3">
+      {deployments.map((d) => (
+        <div key={d.id} className="card overflow-hidden">
+          <div className={`flex flex-wrap items-center gap-3 px-5 py-4 ${d.isActive ? "bg-[rgba(52,211,153,.04)]" : ""}`}>
+            <span className="font-code font-semibold text-sm">v{d.version}</span>
+            <StatusBadge status={d.status} />
+            {d.isActive && <span className="chip !text-[9px] !text-[var(--green)] !border-[rgba(52,211,153,.4)]">PRODUCTION</span>}
+            <FrameworkBadge fw={d.framework} />
+            <span className="text-[11px] text-[var(--faint)] font-code">{d.source}{d.sourceMeta ? ` · ${d.sourceMeta.slice(0, 40)}` : ""}</span>
+            <span className="text-[11px] text-[var(--faint)] ml-auto">{timeAgo(d.createdAt)}{d.durationMs ? ` · ${(d.durationMs / 1000).toFixed(1)}s` : ""}{d.fileCount ? ` · ${d.fileCount} files` : ""}</span>
+            <div className="flex items-center gap-1.5">
+              <button className="btn btn-ghost !py-1.5 !px-3 !text-[11px]" onClick={() => (openLog === d.id ? setOpenLog(null) : showLog(d.id))}>
+                <TerminalSquare size={12} /> Logs
+              </button>
+              {d.status === "ready" && !d.isActive && (
+                <button className="btn btn-ghost !py-1.5 !px-3 !text-[11px]" onClick={() => act(d.id, "rollback")}>
+                  <RotateCcw size={12} /> Roll back here
+                </button>
+              )}
+              <button className="btn btn-ghost !py-1.5 !px-3 !text-[11px]" onClick={() => act(d.id, "redeploy")}>
+                <RefreshCw size={12} /> Redeploy
+              </button>
+            </div>
+          </div>
+          {d.error && <div className="px-5 py-2.5 text-xs text-[var(--red)] border-t border-[var(--line)]">{d.error}</div>}
+          {openLog === d.id && (
+            <div className="border-t border-[var(--line)] p-4 font-code text-[11.5px] leading-5 max-h-80 overflow-y-auto" style={{ background: "rgba(4,5,10,.75)" }}>
+              {logText.split("\n").map((l, i) => (
+                <div key={i} className="term-line" style={{ color: l.includes("✔") || l.includes("DEPLOYED") ? "#34d399" : l.includes("✖") || l.includes("FAILED") ? "#f87171" : "#9aa3c2" }}>{l}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+      {project.activeDeploymentId && (
+        <p className="text-[11px] text-[var(--faint)]">Rollback is instant: traffic repoints to the selected deployment's artifacts, zero rebuild.</p>
+      )}
+    </div>
+  );
+}
+
+/* -------------------------------- Analytics ------------------------------ */
+
+function AnalyticsTab({ projectId }: { projectId: string }) {
+  const [days, setDays] = useState(14);
+  const [data, setData] = useState<Analytics | null>(null);
+  useEffect(() => {
+    setData(null);
+    fetch(`/api/projects/${projectId}/analytics?days=${days}`, { cache: "no-store" }).then((r) => r.json()).then(setData).catch(() => {});
+  }, [projectId, days]);
+
+  const sourceColors: Record<string, string> = { direct: "#7c5cff", search: "#38bdf8", social: "#f472b6", referral: "#34d399" };
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-[var(--faint)]">First-party beacon data — only real visits to your live site appear here.</p>
+        <select className="input !w-auto !py-2 !text-xs" value={days} onChange={(e) => setDays(Number(e.target.value))}>
+          <option value={7}>Last 7 days</option><option value={14}>Last 14 days</option><option value={30}>Last 30 days</option><option value={90}>Last 90 days</option>
+        </select>
+      </div>
+      {!data ? (
+        <div className="skeleton h-72" />
+      ) : data.totals.views === 0 && data.totals.bandwidth === 0 ? (
+        <EmptyState icon={<BarChart3 size={22} />} title="No traffic recorded yet" hint="Share your site URL. Analytics appear automatically — a privacy-friendly beacon is injected into your HTML at the edge." />
+      ) : (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+            {[
+              ["Visitors", data.totals.visitors.toLocaleString(), "#7c5cff"],
+              ["Page views", data.totals.views.toLocaleString(), "#38bdf8"],
+              ["Bandwidth", fmtBytes(data.totals.bandwidth), "#34d399"],
+              ["Avg response", `${data.totals.avgMs} ms`, "#fbbf24"],
+              ["Errors", String(data.totals.errors), "#f87171"],
+            ].map(([l, v, c]) => (
+              <div key={l as string} className="card p-4">
+                <div className="text-[10px] tracking-[0.14em] text-[var(--faint)] uppercase font-semibold">{l}</div>
+                <div className="font-display font-bold text-xl mt-1.5 mono-nums" style={{ color: c as string }}>{v}</div>
+              </div>
+            ))}
+          </div>
+          <div className="card p-6">
+            <h3 className="font-display font-semibold mb-5">Page views</h3>
+            <AreaChart values={data.series.map((s) => s.views)} labels={data.series.map((s) => s.day.slice(5))} />
+          </div>
+          <div className="grid md:grid-cols-3 gap-5">
+            <div className="card p-6">
+              <h3 className="font-display font-semibold mb-5">Traffic sources</h3>
+              <Donut items={data.sources.map((s) => ({ label: s.source, value: s.count, color: sourceColors[s.source] ?? "#8e97b8" }))} />
+            </div>
+            <div className="card p-6">
+              <h3 className="font-display font-semibold mb-5">Top pages</h3>
+              <ul className="space-y-2.5 text-[13px]">
+                {data.topPages.map((p) => (
+                  <li key={p.path} className="flex items-center gap-3">
+                    <span className="font-code text-[var(--muted)] truncate flex-1">{p.path}</span>
+                    <span className="font-code font-semibold">{p.count}</span>
+                  </li>
+                ))}
+                {data.topPages.length === 0 && <li className="text-[var(--faint)]">—</li>}
+              </ul>
+              <h3 className="font-display font-semibold mt-7 mb-4">Devices</h3>
+              <ul className="space-y-2 text-[13px]">
+                {data.devices.map((d) => (
+                  <li key={d.device} className="flex justify-between"><span className="text-[var(--muted)] capitalize">{d.device}</span><span className="font-code font-semibold">{d.count}</span></li>
+                ))}
+              </ul>
+            </div>
+            <div className="card p-6">
+              <h3 className="font-display font-semibold mb-5">Geography</h3>
+              <ul className="space-y-2.5 text-[13px]">
+                {data.countries.map((c) => {
+                  const max = Math.max(1, ...data.countries.map((x) => x.count));
+                  return (
+                    <li key={c.country}>
+                      <div className="flex justify-between mb-1"><span className="text-[var(--muted)]">{c.country}</span><span className="font-code font-semibold">{c.count}</span></div>
+                      <div className="h-1 rounded-full overflow-hidden" style={{ background: "var(--line)" }}><div className="h-full rounded-full" style={{ width: `${(c.count / max) * 100}%`, background: "linear-gradient(90deg,#7c5cff,#38bdf8)" }} /></div>
+                    </li>
+                  );
+                })}
+                {data.countries.length === 0 && <li className="text-[var(--faint)]">No geo data — geo headers are provided by the hosting edge (CF/Vercel).</li>}
+              </ul>
+            </div>
+          </div>
+          {data.recentErrors.length > 0 && (
+            <div className="card p-6">
+              <h3 className="font-display font-semibold mb-4 flex items-center gap-2"><ShieldAlert size={15} className="text-[var(--red)]" /> Error monitoring</h3>
+              <ul className="space-y-2 text-[12.5px] font-code">
+                {data.recentErrors.map((e, i) => (
+                  <li key={i} className="flex items-center gap-3">
+                    <span className="text-[var(--red)] font-bold">{e.status}</span>
+                    <span className="text-[var(--muted)] truncate flex-1">{e.path}</span>
+                    <span className="text-[var(--faint)]">{timeAgo(e.createdAt)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* --------------------------------- Domains ------------------------------- */
+
+function DomainsTab({ project }: { project: Project }) {
+  const [items, setItems] = useState<{ id: string; domain: string; verified: boolean; verificationToken: string }[]>([]);
+  const [input, setInput] = useState("");
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const load = useCallback(async () => {
+    const r = await fetch(`/api/projects/${project.id}/domains`);
+    if (r.ok) setItems((await r.json()).domains);
+  }, [project.id]);
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div className="space-y-5">
+      <div className="card p-6">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h3 className="font-display font-semibold">ORBIXA subdomain</h3>
+          <span className="chip !text-[9px] !text-[var(--green)] !border-[rgba(52,211,153,.4)]">HTTPS AUTOMATIC</span>
+        </div>
+        <div className="mt-3 flex items-center gap-2.5 font-code text-sm text-[var(--muted)]">
+          <Globe size={14} className="text-[var(--green)]" /> /sites/{project.slug}/ <CopyBtn text={`${window.location.origin}/sites/${project.slug}/`} />
+          <span className="text-[10px] text-[var(--faint)]">(on a custom domain like orbixa.site, this becomes {project.slug}.orbixa.site)</span>
+        </div>
+      </div>
+      <div className="card p-6">
+        <h3 className="font-display font-semibold mb-1.5">Custom domains</h3>
+        <p className="text-xs text-[var(--muted)] mb-5">Attach your own domain. Ownership is verified with a real DNS TXT challenge; HTTPS certificates are issued automatically once routed through the platform edge.</p>
+        <div className="flex gap-2.5 flex-col sm:flex-row">
+          <input className="input flex-1" placeholder="app.example.com" value={input} onChange={(e) => setInput(e.target.value)} />
+          <button
+            className="btn btn-primary"
+            onClick={async () => {
+              const r = await fetch(`/api/projects/${project.id}/domains`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ domain: input }) });
+              const d = await r.json();
+              setMsg({ ok: r.ok, text: d.error ?? `Added ${d.domain.domain}. Add the TXT record below, then click Verify.` });
+              setInput(""); load();
+            }}
+          >
+            <Plus size={15} /> Add Domain
+          </button>
+        </div>
+        {msg && <p className={`text-xs mt-3 ${msg.ok ? "text-[var(--green)]" : "text-[var(--red)]"}`}>{msg.text}</p>}
+        <ul className="mt-5 space-y-3">
+          {items.map((d) => (
+            <li key={d.id} className="rounded-xl border border-[var(--line)] p-4 space-y-2.5">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <span className="font-code font-semibold text-sm">{d.domain}</span>
+                {d.verified
+                  ? <span className="inline-flex items-center gap-1 text-[11px] text-[var(--green)] font-semibold"><CheckCircle2 size={12} /> Verified · HTTPS live</span>
+                  : <span className="inline-flex items-center gap-1 text-[11px] text-[var(--amber)] font-semibold"><ShieldAlert size={12} /> Pending DNS</span>}
+                <div className="ml-auto flex gap-2">
+                  {!d.verified && (
+                    <button className="btn btn-ghost !py-1.5 !px-3 !text-[11px]" onClick={async () => {
+                      const r = await fetch(`/api/projects/${project.id}/domains`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ domainId: d.id }) });
+                      const j = await r.json();
+                      setMsg({ ok: r.ok, text: j.error ?? "Domain verified and active." });
+                      load();
+                    }}>Verify DNS</button>
+                  )}
+                  <button className="btn btn-danger !py-1.5 !px-3 !text-[11px]" onClick={async () => { await fetch(`/api/projects/${project.id}/domains?domainId=${d.id}`, { method: "DELETE" }); load(); }}>
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              </div>
+              {!d.verified && (
+                <div className="text-[11px] font-code text-[var(--faint)] rounded-lg p-3" style={{ background: "rgba(4,5,10,.5)" }}>
+                  TXT &nbsp;_orbixa.{d.domain} &nbsp;→&nbsp; <span className="text-[var(--violet-2)]">{d.verificationToken}</span> <CopyBtn text={d.verificationToken} />
+                  <div className="mt-1.5">Then point {d.domain} → CNAME cname.orbixa.site at your DNS provider.</div>
+                </div>
+              )}
+            </li>
+          ))}
+          {items.length === 0 && <li className="text-[13px] text-[var(--faint)]">No custom domains attached.</li>}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------------- Functions ------------------------------ */
+
+function FunctionsTab({ project }: { project: Project }) {
+  const [items, setItems] = useState<{ id: string; route: string; runtime: string; invocations: number; code: string }[]>([]);
+  const [invokeBase, setInvokeBase] = useState("");
+  const [template, setTemplate] = useState("");
+  const [route2, setRoute2] = useState("");
+  const [runtime, setRuntime] = useState("edge");
+  const [code, setCode] = useState("");
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const load = useCallback(async () => {
+    const r = await fetch(`/api/projects/${project.id}/functions`);
+    if (r.ok) { const d = await r.json(); setItems(d.functions); setInvokeBase(d.invokeBase); setTemplate(d.template); if (!code) setCode(d.template); }
+  }, [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div className="grid lg:grid-cols-2 gap-5 items-start">
+      <div className="space-y-4">
+        <div className="card p-5">
+          <h3 className="font-display font-semibold mb-1">Deployed functions</h3>
+          <p className="text-[11px] text-[var(--faint)] mb-4">Invoked at <span className="font-code">{invokeBase}{"{route}"}</span> — sandboxed V8 isolate, 3s CPU limit.</p>
+          {items.length === 0 && <p className="text-[13px] text-[var(--faint)]">No functions yet. Deploy one on the right.</p>}
+          <ul className="space-y-2.5">
+            {items.map((f) => (
+              <li key={f.id} className="rounded-xl border border-[var(--line)] p-3.5 flex items-center gap-3">
+                <Zap size={14} className="text-[var(--violet-2)] shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="font-code text-[13px] font-semibold truncate">/api/{f.route}</div>
+                  <div className="text-[10px] text-[var(--faint)]">{f.runtime} runtime · {f.invocations.toLocaleString()} invocations</div>
+                </div>
+                <a className="btn btn-ghost !py-1.5 !px-3 !text-[11px]" href={`${invokeBase}${f.route}`} target="_blank" rel="noreferrer"><PlayCircle size={12} /> Run</a>
+                <button className="text-[var(--faint)] hover:text-[var(--red)]" onClick={() => { setRoute2(f.route); setRuntime(f.runtime); setCode(f.code); }}><SettingsIcon size={13} /></button>
+                <button className="text-[var(--faint)] hover:text-[var(--red)]" onClick={async () => { await fetch(`/api/projects/${project.id}/functions?fnId=${f.id}`, { method: "DELETE" }); load(); }}><Trash2 size={13} /></button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+      <div className="card p-5">
+        <h3 className="font-display font-semibold mb-4">Deploy function</h3>
+        <div className="grid grid-cols-[1fr_130px] gap-3 mb-3">
+          <div>
+            <label className="label">Route</label>
+            <input className="input font-code !text-[13px]" placeholder="hello-world" value={route2} onChange={(e) => setRoute2(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">Runtime</label>
+            <select className="input !text-[13px]" value={runtime} onChange={(e) => setRuntime(e.target.value)}>
+              <option value="edge">Edge</option><option value="serverless">Serverless</option>
+            </select>
+          </div>
+        </div>
+        <label className="label">Handler code (CommonJS)</label>
+        <textarea
+          className="input font-code !text-[11.5px] !leading-5 h-64 resize-y"
+          spellCheck={false}
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+        />
+        {msg && <p className={`text-xs mt-3 ${msg.ok ? "text-[var(--green)]" : "text-[var(--red)]"}`}>{msg.text}</p>}
+        <div className="flex gap-2.5 mt-4">
+          <button className="btn btn-ghost !text-xs" onClick={() => setCode(template)}>Reset template</button>
+          <button
+            className="btn btn-primary !text-xs flex-1"
+            onClick={async () => {
+              const r = await fetch(`/api/projects/${project.id}/functions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ route: route2, code, runtime }) });
+              const j = await r.json();
+              setMsg({ ok: r.ok, text: j.error ?? `Function live at ${invokeBase}${route2}` });
+              if (r.ok) load();
+            }}
+          >
+            <Zap size={13} /> Deploy Function
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------------- Env vars ------------------------------ */
+
+function EnvTab({ projectId }: { projectId: string }) {
+  const [items, setItems] = useState<{ id: string; key: string; value: string; updatedAt: string }[]>([]);
+  const [reveal, setReveal] = useState(false);
+  const [k, setK] = useState("");
+  const [v, setV] = useState("");
+  const [msg, setMsg] = useState("");
+  const load = useCallback(async (rev = reveal) => {
+    const r = await fetch(`/api/projects/${projectId}/env?reveal=${rev ? 1 : 0}`);
+    if (r.ok) setItems((await r.json()).env);
+  }, [projectId, reveal]);
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div className="card p-6 max-w-2xl">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="font-display font-semibold">Environment variables</h3>
+          <p className="text-[11px] text-[var(--faint)] mt-1">AES-256-GCM encrypted at rest. Injected into functions at invocation time.</p>
+        </div>
+        <button className="btn btn-ghost !py-2 !text-[11px]" onClick={() => { const n = !reveal; setReveal(n); load(n); }}>
+          {reveal ? <EyeOff size={12} /> : <Eye size={12} />} {reveal ? "Hide values" : "Reveal values"}
+        </button>
+      </div>
+      <div className="grid sm:grid-cols-[1fr_1fr_auto] gap-2.5 mt-5">
+        <input className="input font-code !text-[13px]" placeholder="API_KEY" value={k} onChange={(e) => setK(e.target.value.toUpperCase())} />
+        <input className="input font-code !text-[13px]" placeholder="value" value={v} onChange={(e) => setV(e.target.value)} />
+        <button className="btn btn-primary !text-xs" onClick={async () => {
+          const r = await fetch(`/api/projects/${projectId}/env`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: k, value: v }) });
+          const j = await r.json();
+          setMsg(r.ok ? "Saved." : j.error);
+          if (r.ok) { setK(""); setV(""); load(); }
+        }}><Plus size={13} /> Set</button>
+      </div>
+      {msg && <p className="text-xs text-[var(--muted)] mt-2">{msg}</p>}
+      <ul className="mt-5 space-y-2">
+        {items.map((e) => (
+          <li key={e.id} className="flex items-center gap-3 rounded-lg border border-[var(--line)] px-3.5 py-2.5 font-code text-[12.5px]">
+            <span className="font-semibold text-[var(--violet-2)]">{e.key}</span>
+            <span className="text-[var(--muted)] truncate flex-1">{e.value}</span>
+            <CopyBtn text={reveal ? e.value : e.key} />
+            <button className="text-[var(--faint)] hover:text-[var(--red)]" onClick={async () => { await fetch(`/api/projects/${projectId}/env?varId=${e.id}`, { method: "DELETE" }); load(); }}><Trash2 size={13} /></button>
+          </li>
+        ))}
+        {items.length === 0 && <li className="text-[13px] text-[var(--faint)]">No variables defined.</li>}
+      </ul>
+    </div>
+  );
+}
+
+/* --------------------------------- Settings ------------------------------ */
+
+function SettingsTab({ project, refresh }: { project: Project; refresh: () => void }) {
+  const router = useRouter();
+  const [name, setName] = useState(project.name);
+  const [spa, setSpa] = useState(project.spaFallback);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [redirects, setRedirects] = useState<{ id: string; fromPath: string; toPath: string; status: number }[]>([]);
+  const [rFrom, setRFrom] = useState("");
+  const [rTo, setRTo] = useState("");
+
+  const loadRedirects = useCallback(async () => {
+    const r = await fetch(`/api/projects/${project.id}/redirects`);
+    if (r.ok) setRedirects((await r.json()).redirects);
+  }, [project.id]);
+  useEffect(() => { loadRedirects(); }, [loadRedirects]);
+
+  return (
+    <div className="grid lg:grid-cols-2 gap-5 items-start max-w-5xl">
+      <div className="card p-6 space-y-5">
+        <h3 className="font-display font-semibold">General</h3>
+        <div>
+          <label className="label">Project name</label>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <label className="flex items-center gap-3 text-sm cursor-pointer">
+          <button
+            role="switch" aria-checked={spa}
+            onClick={() => setSpa(!spa)}
+            className={`w-10 h-5.5 rounded-full relative transition-colors h-6 ${spa ? "bg-[var(--violet)]" : "bg-[var(--line-strong)]"}`}
+          >
+            <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${spa ? "left-[18px]" : "left-0.5"}`} />
+          </button>
+          SPA fallback <span className="text-[11px] text-[var(--faint)]">— unknown routes serve index.html (React Router etc.)</span>
+        </label>
+        <div className="flex gap-2.5">
+          <button className="btn btn-primary !text-xs" onClick={async () => {
+            const r = await fetch(`/api/projects/${project.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, spaFallback: spa }) });
+            setMsg({ ok: r.ok, text: r.ok ? "Settings saved." : "Save failed." });
+            refresh();
+          }}>Save Changes</button>
+          <button className="btn btn-ghost !text-xs" onClick={async () => {
+            const r = await fetch(`/api/projects/${project.id}/cache`, { method: "POST" });
+            const j = await r.json();
+            setMsg({ ok: r.ok, text: r.ok ? `Edge cache purged (${j.purged}).` : j.error });
+          }}><Eraser size={12} /> Purge Cache</button>
+        </div>
+        {msg && <p className={`text-xs ${msg.ok ? "text-[var(--green)]" : "text-[var(--red)]"}`}>{msg.text}</p>}
+      </div>
+
+      <div className="space-y-5">
+        <div className="card p-6">
+          <h3 className="font-display font-semibold mb-1 flex items-center gap-2"><ArrowRightLeft size={15} className="text-[var(--violet-2)]" /> Redirects</h3>
+          <p className="text-[11px] text-[var(--faint)] mb-4">Applied at the edge before file resolution.</p>
+          <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
+            <input className="input font-code !text-[12px]" placeholder="/old-path" value={rFrom} onChange={(e) => setRFrom(e.target.value)} />
+            <input className="input font-code !text-[12px]" placeholder="/new-path" value={rTo} onChange={(e) => setRTo(e.target.value)} />
+            <button className="btn btn-primary !py-2 !px-3 !text-xs" onClick={async () => {
+              const r = await fetch(`/api/projects/${project.id}/redirects`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: rFrom, to: rTo }) });
+              if (r.ok) { setRFrom(""); setRTo(""); loadRedirects(); }
+            }}><Plus size={13} /></button>
+          </div>
+          <ul className="mt-4 space-y-2">
+            {redirects.map((r) => (
+              <li key={r.id} className="flex items-center gap-2 font-code text-[12px] text-[var(--muted)]">
+                <span className="text-[var(--faint)]">{r.status}</span> {r.fromPath} <span className="text-[var(--violet-2)]">→</span> {r.toPath}
+                <button className="ml-auto text-[var(--faint)] hover:text-[var(--red)]" onClick={async () => { await fetch(`/api/projects/${project.id}/redirects?rid=${r.id}`, { method: "DELETE" }); loadRedirects(); }}><Trash2 size={12} /></button>
+              </li>
+            ))}
+            {redirects.length === 0 && <li className="text-[12px] text-[var(--faint)]">No redirect rules.</li>}
+          </ul>
+        </div>
+
+        <div className="card p-6 border-[rgba(248,113,113,.3)]">
+          <h3 className="font-display font-semibold text-[var(--red)] mb-1.5">Danger zone</h3>
+          <p className="text-[12px] text-[var(--muted)] mb-4">Deletes the project, all deployments, analytics events, domains, functions and stored files. This cannot be undone.</p>
+          <button className="btn btn-danger !text-xs" onClick={() => setConfirmDel(true)}><Trash2 size={13} /> Delete Project</button>
+        </div>
+      </div>
+
+      <Modal open={confirmDel} onClose={() => setConfirmDel(false)} title="Delete project">
+        <p className="text-sm text-[var(--muted)]">Permanently delete <b className="text-[var(--text)]">{project.name}</b> and all of its data?</p>
+        <div className="flex gap-3 mt-6">
+          <button className="btn btn-ghost flex-1" onClick={() => setConfirmDel(false)}>Cancel</button>
+          <button className="btn btn-danger flex-1" onClick={async () => {
+            const r = await fetch(`/api/projects/${project.id}`, { method: "DELETE" });
+            if (r.ok) router.push("/dashboard");
+          }}>Delete permanently</button>
+        </div>
+      </Modal>
+    </div>
+  );
+}

@@ -1,0 +1,129 @@
+"use client";
+
+import { useMemo, useState } from "react";
+
+/** Smooth SVG area/line chart with gradient fill + hover points. */
+export function AreaChart({
+  values,
+  labels,
+  height = 180,
+  color = "#7c5cff",
+  formatter = (v: number) => String(v),
+}: {
+  values: number[];
+  labels: string[];
+  height?: number;
+  color?: string;
+  formatter?: (v: number) => string;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const w = 640;
+  const h = height;
+  const pad = 8;
+  const max = Math.max(1, ...values);
+  const pts = useMemo(
+    () =>
+      values.map((v, i) => ({
+        x: pad + (i * (w - pad * 2)) / Math.max(1, values.length - 1),
+        y: h - 18 - (v / max) * (h - 40),
+        v,
+      })),
+    [values, max, h],
+  );
+  const path = pts
+    .map((p, i) => (i === 0 ? `M ${p.x} ${p.y}` : `C ${pts[i - 1].x + (p.x - pts[i - 1].x) / 2} ${pts[i - 1].y}, ${p.x - (p.x - pts[i - 1].x) / 2} ${p.y}, ${p.x} ${p.y}`))
+    .join(" ");
+  const area = `${path} L ${pts[pts.length - 1]?.x ?? pad} ${h - 18} L ${pts[0]?.x ?? pad} ${h - 18} Z`;
+  const gid = useMemo(() => `g${Math.random().toString(36).slice(2, 8)}`, []);
+  return (
+    <div className="relative">
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full" onMouseLeave={() => setHover(null)}>
+        <defs>
+          <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+            <stop offset="100%" stopColor={color} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {[0.25, 0.5, 0.75].map((f) => (
+          <line key={f} x1={pad} x2={w - pad} y1={h - 18 - f * (h - 40)} y2={h - 18 - f * (h - 40)} stroke="var(--line)" strokeDasharray="3 6" />
+        ))}
+        <path d={area} fill={`url(#${gid})`} />
+        <path d={path} fill="none" stroke={color} strokeWidth="2.4" strokeLinecap="round" />
+        {pts.map((p, i) => (
+          <g key={i}>
+            <rect x={p.x - (w / values.length) * 0.5} y={0} width={w / values.length} height={h} fill="transparent" onMouseEnter={() => setHover(i)} />
+            {hover === i && (
+              <>
+                <circle cx={p.x} cy={p.y} r="5" fill={color} stroke="var(--bg)" strokeWidth="2" />
+                <line x1={p.x} x2={p.x} y1={p.y} y2={h - 18} stroke={color} strokeOpacity="0.4" strokeDasharray="3 3" />
+              </>
+            )}
+          </g>
+        ))}
+      </svg>
+      {hover !== null && (
+        <div
+          className="absolute -top-2 px-2.5 py-1.5 rounded-lg text-[11px] font-code glass"
+          style={{ left: `${(pts[hover].x / w) * 100}%`, transform: "translateX(-50%)" }}
+        >
+          <div className="font-bold">{formatter(values[hover])}</div>
+          <div className="text-[var(--faint)]">{labels[hover]}</div>
+        </div>
+      )}
+      <div className="flex justify-between text-[10px] text-[var(--faint)] font-code mt-1 px-1">
+        <span>{labels[0]}</span>
+        <span>{labels[Math.floor(labels.length / 2)]}</span>
+        <span>{labels[labels.length - 1]}</span>
+      </div>
+    </div>
+  );
+}
+
+export function Donut({ items, size = 150 }: { items: { label: string; value: number; color: string }[]; size?: number }) {
+  const total = Math.max(1, items.reduce((a, b) => a + b.value, 0));
+  const r = 56;
+  const c = 2 * Math.PI * r;
+  let offset = 0;
+  return (
+    <div className="flex items-center gap-5">
+      <svg width={size} height={size} viewBox="0 0 140 140">
+        <circle cx="70" cy="70" r={r} fill="none" stroke="var(--line)" strokeWidth="14" />
+        {items.map((it, i) => {
+          const frac = it.value / total;
+          const dash = `${frac * c} ${c}`;
+          const el = (
+            <circle
+              key={i} cx="70" cy="70" r={r} fill="none" stroke={it.color} strokeWidth="14"
+              strokeDasharray={dash} strokeDashoffset={-offset * c} strokeLinecap="butt"
+              transform="rotate(-90 70 70)" style={{ transition: "stroke-dasharray .6s, stroke-dashoffset .6s" }}
+            />
+          );
+          offset += frac;
+          return el;
+        })}
+        <text x="70" y="66" textAnchor="middle" fill="var(--text)" fontSize="18" fontWeight="700" fontFamily="var(--font-display)">
+          {total.toLocaleString()}
+        </text>
+        <text x="70" y="84" textAnchor="middle" fill="var(--faint)" fontSize="9" letterSpacing="2">TOTAL</text>
+      </svg>
+      <div className="space-y-1.5">
+        {items.map((it) => (
+          <div key={it.label} className="flex items-center gap-2 text-xs">
+            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: it.color }} />
+            <span className="text-[var(--muted)] capitalize">{it.label}</span>
+            <span className="font-code font-semibold ml-auto pl-4">{it.value.toLocaleString()}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function Meter({ value, max, color = "var(--violet)" }: { value: number; max: number; color?: string }) {
+  const pct = Math.min(100, Math.round((value / Math.max(1, max)) * 100));
+  return (
+    <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--line)" }}>
+      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: color }} />
+    </div>
+  );
+}

@@ -1,0 +1,44 @@
+import { NextRequest } from "next/server";
+import { db } from "@/db";
+import { teams, teamMembers, activities } from "@/db/schema";
+import { eq, or } from "drizzle-orm";
+import { requireUser, json } from "@/lib/auth";
+import { slugify } from "@/lib/utils";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  const user = await requireUser();
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const owned = await db.select().from(teams).where(eq(teams.ownerId, user.id));
+  const memberships = await db
+    .select({ team: teams, member: teamMembers })
+    .from(teamMembers)
+    .innerJoin(teams, eq(teamMembers.teamId, teams.id))
+    .where(or(eq(teamMembers.email, user.email), eq(teamMembers.userId, user.id)));
+  const map = new Map<string, { team: typeof teams.$inferSelect; members: (typeof teamMembers.$inferSelect)[] }>();
+  for (const t of owned) map.set(t.id, { team: t, members: [] });
+  for (const m of memberships) if (!map.has(m.team.id)) map.set(m.team.id, { team: m.team, members: [] });
+  for (const [, v] of map) {
+    v.members = await db.select().from(teamMembers).where(eq(teamMembers.teamId, v.team.id));
+  }
+  return json({ teams: [...map.values()] });
+}
+
+export async function POST(req: NextRequest) {
+  const user = await requireUser();
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  let body: { name?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid request body." }, 400);
+  }
+  const name = (body.name ?? "").trim().slice(0, 60);
+  if (!name) return json({ error: "Team name is required." }, 400);
+  const created = await db.insert(teams).values({ name, slug: slugify(name), ownerId: user.id }).returning();
+  await db.insert(teamMembers).values({ teamId: created[0].id, userId: user.id, email: user.email, role: "admin", status: "active" });
+  await db.insert(activities).values({ userId: user.id, teamId: created[0].id, action: "team.created", detail: `Created team “${name}”` });
+  return json({ team: created[0] }, 201);
+}

@@ -1,0 +1,54 @@
+import { NextRequest } from "next/server";
+import bcrypt from "bcryptjs";
+import { db } from "@/db";
+import { users, subscriptions, plans, projects } from "@/db/schema";
+import { desc, eq, sql } from "drizzle-orm";
+import { currentUser, json } from "@/lib/auth";
+import { usageForOwner } from "@/lib/analytics";
+import { storageUsageBytes } from "@/lib/storage";
+
+export const runtime = "nodejs";
+
+export async function GET() {
+  const user = await currentUser();
+  if (!user) return json({ user: null }, 401);
+  const sub = await db.select().from(subscriptions).where(eq(subscriptions.userId, user.id)).orderBy(desc(subscriptions.createdAt)).limit(1);
+  const planId = sub[0]?.planId ?? "free";
+  const planRows = await db.select().from(plans).where(eq(plans.id, planId)).limit(1);
+  const usage = await usageForOwner(user.id);
+  const projectRows = await db.select({ count: sql<number>`count(*)` }).from(projects).where(eq(projects.ownerId, user.id));
+  const storageBytes = await storageUsageBytes();
+  return json({
+    user,
+    subscription: sub[0] ?? null,
+    plan: planRows[0] ?? null,
+    usage: { ...usage, projects: Number(projectRows[0]?.count ?? 0), storageBytes },
+  });
+}
+
+export async function PATCH(req: NextRequest) {
+  const user = await currentUser();
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  let body: { name?: string; company?: string; avatarHue?: number; currentPassword?: string; newPassword?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid request body." }, 400);
+  }
+  const updates: Partial<typeof users.$inferInsert> = {};
+  if (body.name && body.name.trim().length >= 2) updates.name = body.name.trim();
+  if (typeof body.company === "string") updates.company = body.company.trim();
+  if (typeof body.avatarHue === "number") updates.avatarHue = Math.max(0, Math.min(359, Math.round(body.avatarHue)));
+  if (body.newPassword) {
+    const rows = await db.select().from(users).where(eq(users.id, user.id)).limit(1);
+    const current = rows[0];
+    if (!current?.passwordHash || !(await bcrypt.compare(body.currentPassword ?? "", current.passwordHash))) {
+      return json({ error: "Current password is incorrect." }, 403);
+    }
+    if (body.newPassword.length < 8) return json({ error: "New password must be at least 8 characters." }, 400);
+    updates.passwordHash = await bcrypt.hash(body.newPassword, 12);
+  }
+  if (Object.keys(updates).length === 0) return json({ error: "Nothing to update." }, 400);
+  await db.update(users).set(updates).where(eq(users.id, user.id));
+  return json({ ok: true });
+}

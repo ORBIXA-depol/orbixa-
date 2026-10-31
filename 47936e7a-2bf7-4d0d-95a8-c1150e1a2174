@@ -1,0 +1,42 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { Cookie, X } from "lucide-react";
+
+const KEY = "orbixa_cookie_consent";
+
+/** Minimal, honest consent banner: essential-only platform, analytics beacon is cookieless. */
+export function CookieBanner() {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    try {
+      if (!localStorage.getItem(KEY)) setVisible(true);
+    } catch { /* storage unavailable */ }
+  }, []);
+  if (!visible) return null;
+  const choose = (v: "accepted" | "essential") => {
+    try { localStorage.setItem(KEY, v); } catch { /* ignore */ }
+    setVisible(false);
+  };
+  return (
+    <div className="fixed bottom-4 left-4 right-4 sm:right-auto sm:max-w-md z-50 anim-rise">
+      <div className="card p-4 shadow-2xl flex gap-3.5" style={{ background: "var(--panel-solid)" }}>
+        <Cookie size={20} className="text-[var(--violet-2)] shrink-0 mt-0.5" />
+        <div className="flex-1">
+          <p className="text-[13px] leading-relaxed text-[var(--muted)]">
+            ORBIXA uses <b className="text-[var(--text)]">essential cookies</b> for sign-in and themes only. Our site analytics are cookieless and first-party. Details in the{" "}
+            <Link href="/legal/cookie-policy" className="text-[var(--violet-2)] hover:underline">Cookie Policy</Link>.
+          </p>
+          <div className="flex gap-2 mt-3">
+            <button className="btn btn-primary !py-1.5 !px-3.5 !text-[11.5px]" onClick={() => choose("accepted")}>Accept</button>
+            <button className="btn btn-ghost !py-1.5 !px-3.5 !text-[11.5px]" onClick={() => choose("essential")}>Essential only</button>
+          </div>
+        </div>
+        <button aria-label="Close" className="text-[var(--faint)] hover:text-[var(--text)] self-start" onClick={() => choose("essential")}>
+          <X size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}

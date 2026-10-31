@@ -1,0 +1,90 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { User, Lock, KeyRound, CheckCircle2 } from "lucide-react";
+import { Avatar } from "@/components/ui";
+
+type Me = { user: { id: string; name: string; email: string; avatarHue: number; emailVerified: boolean; role: string } | null };
+
+const HUES = [265, 210, 190, 150, 330, 20, 45, 285];
+
+export default function SettingsPage() {
+  const [me, setMe] = useState<Me["user"]>(null);
+  const [name, setName] = useState("");
+  const [company, setCompany] = useState("");
+  const [hue, setHue] = useState(265);
+  const [curPw, setCurPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pwMsg, setPwMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const load = useCallback(async () => {
+    const r = await fetch("/api/auth/me", { cache: "no-store" });
+    if (r.ok) { const d: Me = await r.json(); setMe(d.user); setName(d.user?.name ?? ""); setHue(d.user?.avatarHue ?? 265); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (!me) return <div className="skeleton h-64 max-w-2xl" />;
+
+  return (
+    <div className="max-w-2xl space-y-6">
+      <div>
+        <h1 className="font-display font-bold text-2xl sm:text-3xl tracking-tight">Account Settings</h1>
+        <p className="text-sm text-[var(--muted)] mt-1">Profile, identity and security for {me.email}.</p>
+      </div>
+
+      <div className="card p-6 space-y-5">
+        <h2 className="font-display font-semibold flex items-center gap-2"><User size={15} className="text-[var(--violet-2)]" /> Profile</h2>
+        <div className="flex items-center gap-4">
+          <Avatar name={name || me.name} hue={hue} size={56} />
+          <div className="flex gap-2 flex-wrap">
+            {HUES.map((h) => (
+              <button key={h} onClick={() => setHue(h)} aria-label={`Color ${h}`} className="w-6 h-6 rounded-full transition-transform hover:scale-110" style={{ background: `linear-gradient(135deg, hsl(${h},75%,55%), hsl(${(h + 60) % 360},70%,40%))`, outline: hue === h ? "2px solid var(--text)" : "none", outlineOffset: 2 }} />
+            ))}
+          </div>
+        </div>
+        <div>
+          <label className="label">Display name</label>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div>
+          <label className="label">Company (optional)</label>
+          <input className="input" value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Orbital Dynamics Inc." />
+        </div>
+        <button className="btn btn-primary !text-xs" onClick={async () => {
+          const r = await fetch("/api/auth/me", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, company, avatarHue: hue }) });
+          const d = await r.json();
+          setMsg({ ok: r.ok, text: r.ok ? "Profile saved." : d.error });
+        }}>Save Profile</button>
+        {msg && <p className={`text-xs ${msg.ok ? "text-[var(--green)]" : "text-[var(--red)]"}`}>{msg.text}</p>}
+      </div>
+
+      <div className="card p-6 space-y-5">
+        <h2 className="font-display font-semibold flex items-center gap-2"><Lock size={15} className="text-[var(--violet-2)]" /> Security</h2>
+        <div className="flex items-center gap-2 text-[13px]">
+          <span className="text-[var(--muted)]">Email verification:</span>
+          {me.emailVerified
+            ? <span className="inline-flex items-center gap-1 text-[var(--green)] font-semibold"><CheckCircle2 size={13} /> Verified</span>
+            : <span className="text-[var(--amber)] font-semibold">Pending — check your inbox</span>}
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div>
+            <label className="label">Current password</label>
+            <input className="input" type="password" value={curPw} onChange={(e) => setCurPw(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">New password</label>
+            <input className="input" type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+          </div>
+        </div>
+        <button className="btn btn-ghost !text-xs" onClick={async () => {
+          const r = await fetch("/api/auth/me", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ currentPassword: curPw, newPassword: newPw }) });
+          const d = await r.json();
+          setPwMsg({ ok: r.ok, text: r.ok ? "Password updated. Use it next sign-in." : d.error });
+          if (r.ok) { setCurPw(""); setNewPw(""); }
+        }}><KeyRound size={13} /> Update Password</button>
+        {pwMsg && <p className={`text-xs ${pwMsg.ok ? "text-[var(--green)]" : "text-[var(--red)]"}`}>{pwMsg.text}</p>}
+      </div>
+    </div>
+  );
+}

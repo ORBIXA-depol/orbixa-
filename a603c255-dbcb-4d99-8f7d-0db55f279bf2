@@ -1,0 +1,304 @@
+"use client";
+
+import { Suspense, useEffect, useState } from "react";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Logo } from "@/components/logo";
+import { ThemeToggle } from "@/components/theme";
+import { ArrowLeft, Loader2, Mail, Lock, User, AlertCircle, CheckCircle2 } from "lucide-react";
+
+function GoogleMark() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24">
+      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+      <path fill="#FBBC05" d="M5.84 14.1c-.22-.66-.35-1.36-.35-2.1s.13-1.44.35-2.1V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l3.66-2.84z"/>
+      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+    </svg>
+  );
+}
+
+function GoogleButton() {
+  const [cfg, setCfg] = useState<{ google: boolean } | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => {
+    fetch("/api/auth/config").then((r) => r.json()).then(setCfg).catch(() => setCfg({ google: false }));
+  }, []);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={async () => {
+          if (!cfg?.google) {
+            setMsg("Google sign-in requires GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET env vars on this instance.");
+            return;
+          }
+          const res = await fetch("/api/auth/google");
+          if (res.redirected) window.location.href = res.url;
+          else {
+            const d = await res.json().catch(() => null);
+            window.location.href = "/api/auth/google";
+            void d;
+          }
+        }}
+        className="btn btn-ghost w-full !py-3"
+      >
+        <GoogleMark /> Continue with Google
+      </button>
+      {msg && <p className="mt-2 text-[11px] text-[var(--amber)] text-center">{msg}</p>}
+    </>
+  );
+}
+
+function Shell({ children, title, sub }: { children: React.ReactNode; title: string; sub: string }) {
+  return (
+    <main className="min-h-screen grid lg:grid-cols-[1fr_1.1fr]">
+      <div className="relative hidden lg:flex flex-col justify-between p-12 overflow-hidden" style={{ background: "linear-gradient(160deg, #0b0f22, #05060b 60%)" }}>
+        <div className="absolute inset-0 bg-grid opacity-60" />
+        <div className="absolute -bottom-32 -left-32 w-[480px] h-[480px] rounded-full aurora" style={{ background: "radial-gradient(circle, rgba(124,92,255,.2), transparent 65%)" }} />
+        <Link href="/" className="relative"><Logo size={34} /></Link>
+        <div className="relative">
+          <h2 className="font-display font-bold text-4xl leading-tight">Build. Deploy. Scale.<br /><span className="grad-text">Beyond Limits.</span></h2>
+          <p className="mt-4 text-[var(--muted)] max-w-sm text-sm leading-relaxed">
+            Join the platform trusted by modern teams to ship production websites in seconds — real infrastructure, real analytics, zero gimmicks.
+          </p>
+        </div>
+        <div className="relative flex gap-8 text-xs text-[var(--faint)] font-code">
+          <span>42 EDGE REGIONS</span><span>AUDIT LOGGED</span><span>ENCRYPTED SECRETS</span>
+        </div>
+      </div>
+      <div className="flex items-center justify-center p-6 relative">
+        <div className="absolute top-5 left-5 lg:hidden"><Link href="/"><Logo size={28} /></Link></div>
+        <div className="absolute top-5 right-5 flex items-center gap-2">
+          <ThemeToggle />
+          <Link href="/" className="btn btn-ghost !py-1.5 !px-3 !text-xs"><ArrowLeft size={13} /> Home</Link>
+        </div>
+        <div className="w-full max-w-sm">
+          <h1 className="font-display font-bold text-2xl">{title}</h1>
+          <p className="text-sm text-[var(--muted)] mt-1.5 mb-7">{sub}</p>
+          {children}
+        </div>
+      </div>
+    </main>
+  );
+}
+
+export function Notice({ kind, text, link }: { kind: "error" | "ok"; text: string; link?: string }) {
+  if (!text) return null;
+  const Icon = kind === "error" ? AlertCircle : CheckCircle2;
+  return (
+    <div className={`flex items-start gap-2.5 text-[13px] rounded-xl px-3.5 py-3 mb-4 border ${kind === "error" ? "text-[var(--red)] border-[rgba(248,113,113,.3)] bg-[rgba(248,113,113,.06)]" : "text-[var(--green)] border-[rgba(52,211,153,.3)] bg-[rgba(52,211,153,.06)]"}`}>
+      <Icon size={15} className="mt-0.5 shrink-0" />
+      <div>
+        {text}
+        {link && <a className="block underline underline-offset-2 mt-1 break-all font-code text-[11px]" href={link}>{link}</a>}
+      </div>
+    </div>
+  );
+}
+
+export function LoginPage() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const verified = params.get("verified");
+  const urlError = params.get("error");
+  return (
+    <Shell title="Welcome back" sub="Sign in to your ORBIXA control plane.">
+      {verified && <Notice kind="ok" text="Email verified — you're ready to deploy." />}
+      {urlError && !error && <Notice kind="error" text={`Sign-in issue: ${urlError.replaceAll("-", " ")}`} />}
+      <Notice kind="error" text={error} />
+      <form
+        className="space-y-4"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setBusy(true); setError("");
+          const res = await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password }) });
+          const d = await res.json();
+          setBusy(false);
+          if (!res.ok) return setError(d.error ?? "Login failed");
+          router.push("/dashboard");
+        }}
+      >
+        <div>
+          <label className="label">Email</label>
+          <div className="relative">
+            <Mail size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--faint)]" />
+            <input className="input !pl-10" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" />
+          </div>
+        </div>
+        <div>
+          <div className="flex justify-between items-center mb-1">
+            <label className="label !mb-0">Password</label>
+            <Link href="/forgot" className="text-xs text-[var(--violet-2)] hover:underline">Forgot password?</Link>
+          </div>
+          <div className="relative">
+            <Lock size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--faint)]" />
+            <input className="input !pl-10" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+          </div>
+        </div>
+        <button className="btn btn-primary w-full !py-3" disabled={busy}>{busy && <Loader2 size={15} className="animate-spin" />} Sign In</button>
+      </form>
+      <div className="flex items-center gap-3 my-5"><span className="flex-1 h-px bg-[var(--line)]" /><span className="text-[10px] text-[var(--faint)] tracking-widest">OR</span><span className="flex-1 h-px bg-[var(--line)]" /></div>
+      <GoogleButton />
+      <p className="text-sm text-[var(--muted)] text-center mt-7">New to ORBIXA? <Link href="/signup" className="text-[var(--violet-2)] font-medium hover:underline">Create account</Link></p>
+    </Shell>
+  );
+}
+
+export function SignupPage() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const plan = params.get("plan");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [agreed, setAgreed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [verifyLink, setVerifyLink] = useState("");
+  return (
+    <Shell title="Create your account" sub={plan ? `Start deploying on the ${plan} plan in under a minute.` : "Free forever plan. No credit card required."}>
+      <Notice kind="error" text={error} />
+      {verifyLink && <Notice kind="ok" text="Account created! No SMTP is configured on this instance — use this verification link:" link={verifyLink} />}
+      <form
+        className="space-y-4"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (!agreed) return setError("Please accept the Terms, Acceptable Use and Privacy policies first.");
+          setBusy(true); setError(""); setVerifyLink("");
+          const res = await fetch("/api/auth/signup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, email, password, agreedToPolicies: agreed }) });
+          const d = await res.json();
+          if (!res.ok) { setBusy(false); return setError(d.error ?? "Signup failed"); }
+          if (d.verifyUrl) { setVerifyLink(d.verifyUrl); setBusy(false); setTimeout(() => router.push("/dashboard"), 1800); }
+          else router.push("/dashboard");
+        }}
+      >
+        <div>
+          <label className="label">Full name</label>
+          <div className="relative">
+            <User size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--faint)]" />
+            <input className="input !pl-10" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Ada Lovelace" />
+          </div>
+        </div>
+        <div>
+          <label className="label">Email</label>
+          <div className="relative">
+            <Mail size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--faint)]" />
+            <input className="input !pl-10" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" />
+          </div>
+        </div>
+        <div>
+          <label className="label">Password <span className="normal-case font-normal">(min 8 chars)</span></label>
+          <div className="relative">
+            <Lock size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--faint)]" />
+            <input className="input !pl-10" type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+          </div>
+        </div>
+        <label className="flex items-start gap-3 text-[12.5px] text-[var(--muted)] cursor-pointer select-none leading-relaxed">
+          <input
+            type="checkbox"
+            checked={agreed}
+            onChange={(e) => setAgreed(e.target.checked)}
+            className="mt-0.5 w-4 h-4 rounded accent-[#7c5cff] shrink-0"
+          />
+          <span>
+            I have read and accept the{" "}
+            <Link href="/legal/terms-of-service" target="_blank" className="text-[var(--violet-2)] hover:underline">Terms of Service</Link>,{" "}
+            <Link href="/legal/acceptable-use-policy" target="_blank" className="text-[var(--violet-2)] hover:underline">Acceptable Use Policy</Link>,{" "}
+            <Link href="/legal/privacy-policy" target="_blank" className="text-[var(--violet-2)] hover:underline">Privacy Policy</Link> and{" "}
+            <Link href="/legal/cookie-policy" target="_blank" className="text-[var(--violet-2)] hover:underline">Cookie Policy</Link>. Acceptance is recorded with a timestamp for compliance.
+          </span>
+        </label>
+        <button className="btn btn-primary w-full !py-3" disabled={busy}>{busy && <Loader2 size={15} className="animate-spin" />} Create Account</button>
+      </form>
+      <div className="flex items-center gap-3 my-5"><span className="flex-1 h-px bg-[var(--line)]" /><span className="text-[10px] text-[var(--faint)] tracking-widest">OR</span><span className="flex-1 h-px bg-[var(--line)]" /></div>
+      <GoogleButton />
+      <p className="text-[11px] text-[var(--faint)] text-center mt-6 leading-relaxed">Continuing with Google likewise constitutes acceptance of the binding policies above, recorded with a timestamp. Browse the full library in the <Link href="/legal" className="text-[var(--violet-2)] hover:underline">Legal Center</Link>.</p>
+      <p className="text-sm text-[var(--muted)] text-center mt-4">Already deployed with us? <Link href="/login" className="text-[var(--violet-2)] font-medium hover:underline">Sign in</Link></p>
+    </Shell>
+  );
+}
+
+export function ForgotPage() {
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<{ ok: boolean; msg: string; link?: string } | null>(null);
+  return (
+    <Shell title="Reset your password" sub="We'll email you a secure reset link, valid for 30 minutes.">
+      {done && <Notice kind={done.ok ? "ok" : "error"} text={done.msg} link={done.link} />}
+      {!done?.ok && (
+        <form
+          className="space-y-4"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setBusy(true);
+            const res = await fetch("/api/auth/forgot", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email }) });
+            const d = await res.json();
+            setBusy(false);
+            if (!res.ok) return setDone({ ok: false, msg: d.error ?? "Request failed" });
+            setDone({ ok: true, msg: d.resetUrl ? "No SMTP configured on this instance — use this reset link:" : "If an account exists for that email, a reset link is on its way.", link: d.resetUrl });
+          }}
+        >
+          <div>
+            <label className="label">Account email</label>
+            <div className="relative">
+              <Mail size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--faint)]" />
+              <input className="input !pl-10" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" />
+            </div>
+          </div>
+          <button className="btn btn-primary w-full !py-3" disabled={busy}>{busy && <Loader2 size={15} className="animate-spin" />} Send Reset Link</button>
+        </form>
+      )}
+      <p className="text-sm text-[var(--muted)] text-center mt-7"><Link href="/login" className="text-[var(--violet-2)] font-medium hover:underline">Back to sign in</Link></p>
+    </Shell>
+  );
+}
+
+export function ResetPage() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const token = params.get("token") ?? "";
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [state, setState] = useState<{ ok: boolean; msg: string } | null>(null);
+  return (
+    <Shell title="Choose a new password" sub="Your new password must be at least 8 characters.">
+      {state && <Notice kind={state.ok ? "ok" : "error"} text={state.msg} />}
+      {!state?.ok ? (
+        <form
+          className="space-y-4"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setBusy(true);
+            const res = await fetch("/api/auth/reset", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token, password }) });
+            const d = await res.json();
+            setBusy(false);
+            if (!res.ok) return setState({ ok: false, msg: d.error ?? "Reset failed" });
+            setState({ ok: true, msg: "Password updated. Redirecting to sign in…" });
+            setTimeout(() => router.push("/login"), 1500);
+          }}
+        >
+          <div>
+            <label className="label">New password</label>
+            <div className="relative">
+              <Lock size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--faint)]" />
+              <input className="input !pl-10" type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+            </div>
+          </div>
+          <button className="btn btn-primary w-full !py-3" disabled={busy || !token}>{busy && <Loader2 size={15} className="animate-spin" />} Update Password</button>
+          {!token && <p className="text-xs text-[var(--amber)]">Missing reset token — use the link from your email.</p>}
+        </form>
+      ) : (
+        <Link href="/login" className="btn btn-primary w-full !py-3">Continue to Sign In</Link>
+      )}
+    </Shell>
+  );
+}
+
+export function LoginPageWrapped() { return <Suspense><LoginPage /></Suspense>; }
+export function SignupPageWrapped() { return <Suspense><SignupPage /></Suspense>; }
+export function ResetPageWrapped() { return <Suspense><ResetPage /></Suspense>; }

@@ -1,0 +1,73 @@
+import { db } from "@/db";
+import { platformConfig, plans, users } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import crypto from "crypto";
+import bcrypt from "bcryptjs";
+
+let secretCache: string | null = null;
+
+/** Platform-wide secret persisted in DB (used for JWT signing + secret encryption). */
+export async function platformSecret() {
+  if (secretCache) return secretCache;
+  const envSecret = process.env.AUTH_SECRET;
+  if (envSecret) {
+    secretCache = envSecret;
+    return envSecret;
+  }
+  const rows = await db.select().from(platformConfig).where(eq(platformConfig.key, "auth_secret"));
+  if (rows[0]) {
+    secretCache = rows[0].value;
+    return secretCache;
+  }
+  const generated = crypto.randomBytes(32).toString("hex");
+  await db.insert(platformConfig).values({ key: "auth_secret", value: generated }).onConflictDoNothing();
+  secretCache = generated;
+  return generated;
+}
+
+export async function getConfig(key: string, fallback = "") {
+  const rows = await db.select().from(platformConfig).where(eq(platformConfig.key, key));
+  return rows[0]?.value ?? fallback;
+}
+
+export async function setConfig(key: string, value: string) {
+  await db
+    .insert(platformConfig)
+    .values({ key, value })
+    .onConflictDoUpdate({ target: platformConfig.key, set: { value } });
+}
+
+export { PLANS } from "./plans-shared";
+import { PLANS } from "./plans-shared";
+export type PlanId = (typeof PLANS)[number]["id"];
+
+/** Idempotent bootstrap: plans, platform config, first admin. */
+let seeded = false;
+export async function ensureSeed() {
+  if (seeded) return;
+  seeded = true;
+  try {
+    for (const p of PLANS) {
+      await db
+        .insert(plans)
+        .values({ ...p, features: [...p.features] })
+        .onConflictDoUpdate({ target: plans.id, set: { name: p.name, priceMonthly: p.priceMonthly, maxProjects: p.maxProjects, maxStorageMb: p.maxStorageMb, maxBandwidthGb: p.maxBandwidthGb, maxTeamSeats: p.maxTeamSeats, maxUploadMb: p.maxUploadMb, features: [...p.features] } });
+    }
+    await setConfig("registration_enabled", (await getConfig("registration_enabled", "true")) || "true");
+    const existing = await db.select({ id: users.id }).from(users).where(eq(users.role, "admin")).limit(1);
+    if (!existing[0]) {
+      const password = process.env.ADMIN_PASSWORD || "OrbixaAdmin!2026";
+      await db.insert(users).values({
+        email: "admin@orbixa.dev",
+        name: "Orbixa Admin",
+        passwordHash: await bcrypt.hash(password, 10),
+        emailVerified: true,
+        role: "admin",
+        avatarHue: 265,
+      });
+    }
+  } catch (e) {
+    seeded = false; // allow retry on transient DB errors
+    console.error("[orbixa] seed error", e);
+  }
+}

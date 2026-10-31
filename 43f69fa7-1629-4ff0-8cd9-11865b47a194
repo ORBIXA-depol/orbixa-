@@ -1,0 +1,66 @@
+import os from "os";
+import { db } from "@/db";
+import { users, projects, deployments, events, securityLogs, invoices } from "@/db/schema";
+import { desc, eq, sql } from "drizzle-orm";
+import { requireAdmin, json } from "@/lib/auth";
+import { storageUsageBytes } from "@/lib/storage";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  const admin = await requireAdmin();
+  if (!admin) return json({ error: "Forbidden" }, 403);
+  const t0 = performance.now();
+  await db.execute(sql`select 1`);
+  const dbLatencyMs = Math.round(performance.now() - t0);
+
+  const [u] = await db.select({ count: sql<number>`count(*)` }).from(users);
+  const [p] = await db.select({ count: sql<number>`count(*)` }).from(projects);
+  const [d] = await db.select({ count: sql<number>`count(*)` }).from(deployments);
+  const [e] = await db.select({ count: sql<number>`count(*)` }).from(events);
+  const [inv] = await db.select({ total: sql<number>`coalesce(sum(${invoices.amountCents}) filter (where ${invoices.status} = 'paid'),0)` }).from(invoices);
+  const perStatus = await db
+    .select({ status: deployments.status, count: sql<number>`count(*)` })
+    .from(deployments)
+    .groupBy(deployments.status);
+
+  const rd = await db
+    .select({
+      id: deployments.id, status: deployments.status, source: deployments.source,
+      framework: deployments.framework, createdAt: deployments.createdAt, durationMs: deployments.durationMs,
+      projectName: projects.name, slug: projects.slug, ownerEmail: users.email,
+    })
+    .from(deployments)
+    .innerJoin(projects, eq(deployments.projectId, projects.id))
+    .innerJoin(users, eq(projects.ownerId, users.id))
+    .orderBy(desc(deployments.createdAt))
+    .limit(12);
+
+  const logs = await db.select().from(securityLogs).orderBy(desc(securityLogs.createdAt)).limit(30);
+  const mem = process.memoryUsage();
+  const storageBytes = await storageUsageBytes();
+
+  return json({
+    totals: {
+      users: Number(u?.count ?? 0), projects: Number(p?.count ?? 0), deployments: Number(d?.count ?? 0),
+      events: Number(e?.count ?? 0), revenueCents: Number(inv?.total ?? 0),
+    },
+    deploymentsByStatus: perStatus.map((s) => ({ status: s.status, count: Number(s.count) })),
+    recentDeployments: rd,
+    securityLogs: logs,
+    infra: {
+      dbLatencyMs,
+      nodeVersion: process.version,
+      uptimeSec: Math.round(process.uptime()),
+      rssMb: Math.round(mem.rss / 1024 / 1024),
+      heapMb: Math.round(mem.heapUsed / 1024 / 1024),
+      loadAvg: os.loadavg().map((n) => Number(n.toFixed(2))),
+      cpus: os.cpus().length,
+      freeMemMb: Math.round(os.freemem() / 1024 / 1024),
+      totalMemMb: Math.round(os.totalmem() / 1024 / 1024),
+      storageBytes,
+      platform: `${os.type()} ${os.arch()}`,
+    },
+  });
+}

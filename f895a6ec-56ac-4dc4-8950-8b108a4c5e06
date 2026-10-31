@@ -1,0 +1,81 @@
+import fs from "fs";
+import path from "path";
+import fsp from "fs/promises";
+
+/**
+ * Object storage abstraction. Local-driver by default (DATA_DIR).
+ * For production scale, point S3_* env vars at an S3-compatible bucket
+ * (AWS S3 / Cloudflare R2 / MinIO) and swap the driver here — the rest of
+ * the platform only calls these four functions.
+ */
+export const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), ".orbixa-storage");
+
+export function ensureDirs() {
+  for (const d of ["uploads", "deployments", "builds"]) {
+    fs.mkdirSync(path.join(DATA_DIR, d), { recursive: true });
+  }
+}
+
+export const storagePaths = {
+  upload: (deploymentId: string) => path.join(DATA_DIR, "uploads", `${deploymentId}.zip`),
+  deploymentDir: (deploymentId: string) => path.join(DATA_DIR, "deployments", deploymentId),
+  deploymentFile: (deploymentId: string, rel: string) =>
+    path.join(DATA_DIR, "deployments", deploymentId, rel),
+  buildDir: (deploymentId: string) => path.join(DATA_DIR, "builds", deploymentId),
+};
+
+export async function saveUpload(deploymentId: string, buf: Buffer) {
+  ensureDirs();
+  await fsp.writeFile(storagePaths.upload(deploymentId), buf);
+}
+
+export async function readUpload(deploymentId: string) {
+  return fsp.readFile(storagePaths.upload(deploymentId));
+}
+
+export async function writeDeploymentFile(deploymentId: string, rel: string, data: Buffer) {
+  ensureDirs();
+  const full = storagePaths.deploymentFile(deploymentId, rel);
+  await fsp.mkdir(path.dirname(full), { recursive: true });
+  await fsp.writeFile(full, data);
+}
+
+export async function readDeploymentFile(deploymentId: string, rel: string) {
+  return fsp.readFile(storagePaths.deploymentFile(deploymentId, rel));
+}
+
+export async function listDeploymentFiles(deploymentId: string, base = ""): Promise<string[]> {
+  const dir = storagePaths.deploymentDir(deploymentId);
+  const root = base ? path.join(dir, base) : dir;
+  let out: string[] = [];
+  try {
+    const ents = await fsp.readdir(root, { withFileTypes: true });
+    for (const e of ents) {
+      const rel = base ? `${base}/${e.name}` : e.name;
+      if (e.isDirectory()) out = out.concat(await listDeploymentFiles(deploymentId, rel));
+      else out.push(rel);
+    }
+  } catch { /* dir missing */ }
+  return out;
+}
+
+export async function dirSizeBytes(dir: string): Promise<number> {
+  let total = 0;
+  try {
+    const ents = await fsp.readdir(dir, { withFileTypes: true });
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) total += await dirSizeBytes(p);
+      else total += (await fsp.stat(p)).size;
+    }
+  } catch { /* ignore */ }
+  return total;
+}
+
+export async function storageUsageBytes() {
+  return dirSizeBytes(DATA_DIR);
+}
+
+export async function removeDeploymentFiles(deploymentId: string) {
+  await fsp.rm(storagePaths.deploymentDir(deploymentId), { recursive: true, force: true });
+}

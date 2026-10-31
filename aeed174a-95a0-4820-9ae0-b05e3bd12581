@@ -1,0 +1,132 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { CreditCard, Check, Receipt, ArrowUpRight, Gauge, HardDrive, Boxes, Info } from "lucide-react";
+import { Meter } from "@/components/charts";
+import { fmtBytes } from "@/lib/utils";
+
+type Billing = {
+  plans: { id: string; name: string; priceMonthly: number; maxProjects: number; maxStorageMb: number; maxBandwidthGb: number; maxTeamSeats: number; features: string[] }[];
+  subscription: { planId: string; status: string; currentPeriodEnd: string | null; provider: string } | null;
+  invoices: { id: string; planId: string; amountCents: number; status: string; description: string; createdAt: string; provider: string }[];
+  usage: { projects: number; storageBytes: number; bandwidthThisMonth: number; pageviewsThisMonth: number };
+  stripeEnabled: boolean;
+};
+
+export default function BillingPage() {
+  const [data, setData] = useState<Billing | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const load = useCallback(async () => {
+    const r = await fetch("/api/billing", { cache: "no-store" });
+    if (r.ok) setData(await r.json());
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const currentPlan = data?.subscription?.planId ?? "free";
+  const plan = data?.plans.find((p) => p.id === currentPlan);
+
+  const choose = async (planId: string) => {
+    setBusy(planId); setMsg(null);
+    const r = await fetch("/api/billing/checkout", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ planId }) });
+    const d = await r.json();
+    setBusy(null);
+    if (!r.ok) { setMsg({ ok: false, text: d.error ?? "Checkout failed." }); return; }
+    if (d.checkoutUrl) { window.location.href = d.checkoutUrl; return; }
+    setMsg({ ok: true, text: `Plan switched to ${planId}. (Built-in billing — configure STRIPE_SECRET_KEY for card processing.)` });
+    load();
+  };
+
+  if (!data) return <div className="space-y-4 max-w-5xl">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="skeleton h-40" />)}</div>;
+
+  return (
+    <div className="space-y-8 max-w-6xl">
+      <div>
+        <h1 className="font-display font-bold text-2xl sm:text-3xl tracking-tight">Billing & Plans</h1>
+        <p className="text-sm text-[var(--muted)] mt-1">Usage-based limits enforced by the platform itself.</p>
+      </div>
+
+      {msg && <div className={`card px-5 py-3.5 text-sm ${msg.ok ? "text-[var(--green)]" : "text-[var(--red)]"}`}>{msg.text}</div>}
+
+      {plan && (
+        <div className="card p-6">
+          <div className="flex items-center gap-3 flex-wrap mb-6">
+            <CreditCard size={17} className="text-[var(--violet-2)]" />
+            <h2 className="font-display font-semibold">Current usage — {plan.name} plan</h2>
+            <span className="chip !text-[9px] ml-auto">{data.subscription?.provider === "stripe" ? "STRIPE" : "BUILT-IN BILLING"}</span>
+          </div>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            {[
+              { icon: Boxes, label: "Projects", cur: `${data.usage.projects} / ${plan.maxProjects}`, pct: data.usage.projects / plan.maxProjects },
+              { icon: HardDrive, label: "Storage", cur: `${fmtBytes(data.usage.storageBytes)} / ${plan.maxStorageMb} MB`, pct: data.usage.storageBytes / (plan.maxStorageMb * 1024 * 1024) },
+              { icon: Gauge, label: "Bandwidth (month)", cur: `${fmtBytes(data.usage.bandwidthThisMonth)} / ${plan.maxBandwidthGb} GB`, pct: data.usage.bandwidthThisMonth / (plan.maxBandwidthGb * 1024 ** 3) },
+              { icon: ArrowUpRight, label: "Page views (month)", cur: data.usage.pageviewsThisMonth.toLocaleString(), pct: 0.02 },
+            ].map((u) => (
+              <div key={u.label}>
+                <div className="flex items-center gap-1.5 text-xs text-[var(--muted)] font-medium mb-2"><u.icon size={12} /> {u.label}</div>
+                <Meter value={u.pct * 100} max={100} />
+                <div className="font-code text-[11px] text-[var(--faint)] mt-1.5">{u.cur}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="grid md:grid-cols-3 gap-5">
+        {data.plans.sort((a, b) => a.priceMonthly - b.priceMonthly).map((p) => {
+          const active = p.id === currentPlan;
+          return (
+            <div key={p.id} className={`card p-7 flex flex-col ${p.id === "pro" ? "" : ""}`} style={active ? { borderColor: "rgba(124,92,255,.55)", boxShadow: "inset 0 0 40px -20px rgba(124,92,255,.25)" } : {}}>
+              <div className="flex items-center justify-between">
+                <span className="font-display font-semibold">{p.name}</span>
+                {active && <span className="chip !text-[9px] !text-[var(--violet-2)] !border-[rgba(124,92,255,.45)]">CURRENT</span>}
+              </div>
+              <div className="mt-3 flex items-end gap-1"><span className="font-display font-bold text-4xl">${p.priceMonthly / 100}</span><span className="text-xs text-[var(--faint)] mb-1">/mo</span></div>
+              <ul className="mt-5 space-y-2 text-[12.5px] text-[var(--muted)] flex-1">
+                {p.features.slice(0, 5).map((f) => <li key={f} className="flex gap-2"><Check size={13} className="text-[var(--green)] shrink-0 mt-0.5" />{f}</li>)}
+              </ul>
+              <button className={`btn w-full mt-6 ${active ? "btn-ghost opacity-60" : "btn-primary"}`} disabled={active || busy !== null} onClick={() => choose(p.id)}>
+                {busy === p.id ? "Processing…" : active ? "Your plan" : p.priceMonthly === 0 ? "Downgrade to Free" : `Upgrade to ${p.name}`}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="card p-6">
+        <div className="flex items-center gap-2.5 mb-5">
+          <Receipt size={16} className="text-[var(--violet-2)]" />
+          <h2 className="font-display font-semibold">Billing history</h2>
+        </div>
+        {data.invoices.length === 0 ? (
+          <p className="text-[13px] text-[var(--faint)]">No invoices yet. Paid plan purchases appear here with provider references.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="text-left text-[10px] tracking-[0.12em] text-[var(--faint)] uppercase border-b border-[var(--line)]">
+                  <th className="pb-3 pr-4 font-semibold">Invoice</th><th className="pb-3 pr-4 font-semibold">Amount</th><th className="pb-3 pr-4 font-semibold">Status</th><th className="pb-3 pr-4 font-semibold">Provider</th><th className="pb-3 font-semibold">Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.invoices.map((inv) => (
+                  <tr key={inv.id} className="border-b border-[var(--line)] last:border-0">
+                    <td className="py-3 pr-4 font-medium">{inv.description}</td>
+                    <td className="py-3 pr-4 font-code">${(inv.amountCents / 100).toFixed(2)}</td>
+                    <td className="py-3 pr-4"><span className={`text-[11px] font-semibold ${inv.status === "paid" ? "text-[var(--green)]" : "text-[var(--amber)]"}`}>{inv.status.toUpperCase()}</span></td>
+                    <td className="py-3 pr-4 text-[var(--muted)]">{inv.provider}</td>
+                    <td className="py-3 text-[var(--muted)]">{new Date(inv.createdAt).toLocaleDateString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="flex items-center gap-2 text-[11px] text-[var(--faint)] mt-5">
+          <Info size={12} /> Card processing activates when STRIPE_SECRET_KEY (and optionally STRIPE_PRICE_PRO / STRIPE_PRICE_BUSINESS) are configured; until then the platform uses auditable built-in billing.
+        </p>
+      </div>
+    </div>
+  );
+}

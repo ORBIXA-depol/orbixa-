@@ -1,0 +1,73 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { Rocket, ArrowRight, Sparkles } from "lucide-react";
+import { DeployWidget } from "@/components/dashboard/deploy-widget";
+
+export default function NewDeploymentPage() {
+  const router = useRouter();
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [project, setProject] = useState<{ id: string; slug: string } | null>(null);
+
+  const create = async () => {
+    if (!name.trim()) { setError("Give your project a name first."); return; }
+    setBusy(true); setError("");
+    const res = await fetch("/api/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
+    const d = await res.json();
+    setBusy(false);
+    if (!res.ok) { setError(d.error ?? "Could not create project."); return; }
+    setProject(d.project);
+  };
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-7">
+      <div>
+        <div className="chip mb-4 !text-[10px]"><Sparkles size={10} className="text-[var(--violet-2)]" /> NEW DEPLOYMENT</div>
+        <h1 className="font-display font-bold text-2xl sm:text-3xl tracking-tight">Ship something <span className="grad-text">extraordinary.</span></h1>
+        <p className="text-sm text-[var(--muted)] mt-1.5">Three steps: name it, feed it code, watch it go live on the ORBIXA edge.</p>
+      </div>
+
+      <div className="card p-6">
+        <div className="flex items-center gap-2.5 mb-4">
+          <span className="w-6 h-6 rounded-full grid place-items-center text-[11px] font-bold text-white" style={{ background: "linear-gradient(135deg,#7c5cff,#4338ca)" }}>1</span>
+          <h2 className="font-display font-semibold">Name your project</h2>
+          {project && <span className="chip !text-[9px] ml-auto !text-[var(--green)] !border-[rgba(52,211,153,.4)]">/{project.slug}</span>}
+        </div>
+        <div className="flex gap-3 flex-col sm:flex-row">
+          <input
+            className="input flex-1"
+            placeholder="my-awesome-app"
+            value={name}
+            disabled={!!project}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !project && create()}
+          />
+          {!project && (
+            <button className="btn btn-primary" onClick={create} disabled={busy}>
+              {busy ? "Creating…" : <>Create Project <ArrowRight size={15} /></>}
+            </button>
+          )}
+        </div>
+        {error && <p className="text-xs text-[var(--red)] mt-2.5">{error}</p>}
+      </div>
+
+      {project && (
+        <div className="card p-6 anim-rise">
+          <div className="flex items-center gap-2.5 mb-5">
+            <span className="w-6 h-6 rounded-full grid place-items-center text-[11px] font-bold text-white" style={{ background: "linear-gradient(135deg,#7c5cff,#4338ca)" }}>2</span>
+            <h2 className="font-display font-semibold flex items-center gap-2"><Rocket size={16} className="text-[var(--violet-2)]" /> Choose a deployment source</h2>
+          </div>
+          <DeployWidget projectId={project.id} slug={project.slug} />
+          <div className="mt-5 pt-4 border-t border-[var(--line)]">
+            <button className="text-xs text-[var(--violet-2)] hover:underline" onClick={() => router.push(`/dashboard/projects/${project.id}`)}>
+              Skip to project console →
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,61 @@
+/** Plan catalog — safe to import from client components (no DB deps). */
+export const PLANS = [
+  {
+    id: "free",
+    name: "Free",
+    priceMonthly: 0,
+    maxProjects: 3,
+    maxStorageMb: 512,
+    maxBandwidthGb: 10,
+    maxTeamSeats: 1,
+    maxUploadMb: 25,
+    features: [
+      "3 projects on orbixa.site subdomains",
+      "512 MB storage · 10 GB bandwidth / mo",
+      "Instant static deployments from ZIP",
+      "Real-time analytics & build logs",
+      "Automatic HTTPS & global cache headers",
+      "Community support",
+    ],
+  },
+  {
+    id: "pro",
+    name: "Pro",
+    priceMonthly: 1900,
+    maxProjects: 25,
+    maxStorageMb: 10240,
+    maxBandwidthGb: 1024,
+    maxTeamSeats: 5,
+    maxUploadMb: 150,
+    features: [
+      "25 projects · 10 GB storage · 1 TB bandwidth",
+      "GitHub repository imports",
+      "Serverless & edge functions",
+      "Custom domains + DNS verification",
+      "Environment variables & secrets",
+      "Team collaboration (5 seats)",
+      "Priority builds & email support",
+    ],
+  },
+  {
+    id: "business",
+    name: "Business",
+    priceMonthly: 9900,
+    maxProjects: 999,
+    maxStorageMb: 102400,
+    maxBandwidthGb: 10240,
+    maxTeamSeats: 50,
+    maxUploadMb: 500,
+    features: [
+      "Unlimited projects · 100 GB storage · 10 TB bandwidth",
+      "Everything in Pro, plus:",
+      "Advanced roles & permissions (50 seats)",
+      "Admin & security audit logs",
+      "API access & webhooks",
+      "99.99% uptime SLA",
+      "Dedicated infrastructure & 24/7 support",
+    ],
+  },
+] as const;
+
+export type Plan = (typeof PLANS)[number];

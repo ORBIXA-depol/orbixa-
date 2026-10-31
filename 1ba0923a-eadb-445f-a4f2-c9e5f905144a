@@ -1,0 +1,64 @@
+import { db } from "@/db";
+import { deployments, projects, subscriptions, plans, activities } from "@/db/schema";
+import { desc, eq, sql } from "drizzle-orm";
+import { saveUpload } from "./storage";
+import { runDeployment } from "./deploy";
+
+export const runtime = "nodejs";
+
+export async function getUserPlan(userId: string) {
+  const sub = await db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).orderBy(desc(subscriptions.createdAt)).limit(1);
+  const rows = await db.select().from(plans).where(eq(plans.id, sub[0]?.planId ?? "free")).limit(1);
+  return rows[0];
+}
+
+export async function currentStorageBytes(userId: string) {
+  const rows = await db.execute(sql`
+    select coalesce(sum(d.total_bytes),0)::bigint as bytes
+    from deployments d join projects p on p.id = d.project_id
+    where p.owner_id = ${userId} and d.status = 'ready'
+  `);
+  return Number((rows.rows[0] as { bytes?: string | number } | undefined)?.bytes ?? 0);
+}
+
+/**
+ * Registers a deployment row, persists the original archive (enabling
+ * redeploy/rollback), then launches the async build pipeline.
+ * Production note: replace the direct invocation with a queue worker
+ * (BullMQ + REDIS_URL) for horizontally scaled isolated builds.
+ */
+export async function launchDeployment(opts: {
+  projectId: string;
+  userId: string;
+  source: "upload" | "github" | "git";
+  sourceMeta: string;
+  zip: Buffer;
+  frameworkHint?: string;
+}) {
+  const plan = await getUserPlan(opts.userId);
+  const maxUpload = (plan?.maxUploadMb ?? 25) * 1024 * 1024;
+  if (opts.zip.byteLength > maxUpload) {
+    throw Object.assign(new Error(`Archive exceeds your plan's ${plan?.maxUploadMb ?? 25} MB upload limit. Upgrade for larger deployments.`), { status: 402 });
+  }
+  const pRows = await db.select().from(projects).where(eq(projects.id, opts.projectId)).limit(1);
+  const project = pRows[0];
+  if (!project) throw Object.assign(new Error("Project not found"), { status: 404 });
+
+  const version = (project.totalDeployments ?? 0) + 1;
+  const created = await db.insert(deployments).values({
+    projectId: project.id,
+    version,
+    status: "queued",
+    source: opts.source,
+    sourceMeta: opts.sourceMeta.slice(0, 300),
+    framework: opts.frameworkHint ?? "static",
+    createdBy: opts.userId,
+    buildLog: "",
+  }).returning();
+  const dep = created[0];
+  await saveUpload(dep.id, opts.zip);
+  await db.insert(activities).values({ userId: opts.userId, projectId: project.id, action: "deployment.queued", detail: `v${version} via ${opts.source}` });
+  // Launch build asynchronously (isolated worker in production).
+  void runDeployment(dep.id);
+  return { deployment: dep, project };
+}

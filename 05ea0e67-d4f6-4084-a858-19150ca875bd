@@ -1,0 +1,84 @@
+import { NextRequest } from "next/server";
+import bcrypt from "bcryptjs";
+import { db } from "@/db";
+import { users, authTokens, subscriptions, activities, policyAcceptances } from "@/db/schema";
+import { BINDING_POLICY_IDS, getPolicy, currentVersion } from "@/lib/legal";
+import { eq } from "drizzle-orm";
+import { createSession, rateLimit, clientIp, logSecurity, json } from "@/lib/auth";
+import { getConfig, ensureSeed } from "@/lib/platform";
+import { randomToken } from "@/lib/utils";
+import { sendEmail, appBaseUrl } from "@/lib/email";
+
+export const runtime = "nodejs";
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export async function POST(req: NextRequest) {
+  await ensureSeed();
+  const ip = clientIp(req);
+  if (!rateLimit(`signup:${ip}`, 10, 60_000)) return json({ error: "Too many attempts. Try again shortly." }, 429);
+  if ((await getConfig("registration_enabled", "true")) !== "true") {
+    return json({ error: "Registration is temporarily disabled by the platform administrator." }, 403);
+  }
+  let body: { name?: string; email?: string; password?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid request body." }, 400);
+  }
+  const name = (body.name ?? "").trim();
+  const email = (body.email ?? "").trim().toLowerCase();
+  const password = body.password ?? "";
+  const agreed = (body as { agreedToPolicies?: boolean }).agreedToPolicies === true;
+  if (!name || name.length < 2) return json({ error: "Please provide your name." }, 400);
+  if (!EMAIL_RE.test(email)) return json({ error: "Please provide a valid email address." }, 400);
+  if (password.length < 8) return json({ error: "Password must be at least 8 characters." }, 400);
+  if (!agreed) return json({ error: "You must accept the Terms of Service, Acceptable Use Policy and Privacy Policy to create an account." }, 400);
+
+  const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
+  if (existing[0]) {
+    await logSecurity("signup.conflict", ip, `Duplicate signup attempt for ${email}`);
+    return json({ error: "An account with this email already exists." }, 409);
+  }
+
+  const passwordHash = await bcrypt.hash(password, 12);
+  const hue = Math.floor(Math.random() * 360);
+  const created = await db.insert(users).values({ email, name, passwordHash, avatarHue: hue }).returning();
+  const user = created[0];
+  await db.insert(subscriptions).values({ userId: user.id, planId: "free", status: "active" });
+
+  // Record policy acceptances at their current versions (audit-grade records).
+  const ua = req.headers.get("user-agent")?.slice(0, 300) ?? null;
+  for (const pid of BINDING_POLICY_IDS) {
+    const p = getPolicy(pid);
+    if (!p) continue;
+    await db.insert(policyAcceptances).values({
+      userId: user.id, policyId: pid, version: currentVersion(p), source: "signup", ip, userAgent: ua,
+    });
+  }
+
+  const token = randomToken(32);
+  await db.insert(authTokens).values({
+    userId: user.id,
+    type: "verify_email",
+    token,
+    expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24),
+  });
+  const base = appBaseUrl() || new URL(req.url).origin;
+  const link = `${base}/api/auth/verify?token=${token}`;
+  const mail = await sendEmail(
+    email,
+    "Verify your ORBIXA account",
+    `Welcome to ORBIXA, ${name}.\n\nConfirm your email to activate deployments:\n${link}\n\nThis link expires in 24 hours.`,
+  );
+
+  await db.insert(activities).values({ userId: user.id, action: "account.created", detail: `Signed up with email` });
+  await logSecurity("signup.success", ip, `New account ${email}`, user.id);
+  await createSession(user.id, req.headers.get("user-agent") ?? undefined, ip);
+
+  return json({
+    user: { id: user.id, email: user.email, name: user.name, role: user.role, emailVerified: user.emailVerified, avatarHue: user.avatarHue },
+    emailDelivery: mail.delivered ? "smtp" : "outbox",
+    verifyUrl: mail.delivered ? undefined : link, // surfaced when no SMTP is configured (dev mode)
+  });
+}

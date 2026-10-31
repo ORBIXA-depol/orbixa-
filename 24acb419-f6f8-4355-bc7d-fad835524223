@@ -1,0 +1,17 @@
+import { NextRequest, NextResponse } from "next/server";
+
+/**
+ * Rewrites all published-site traffic to the edge serve engine while
+ * keeping the public URL clean: /sites/{slug}/deep/path.asset
+ */
+export const config = {
+  matcher: ["/sites/:path*"],
+};
+
+export function middleware(req: NextRequest) {
+  const url = req.nextUrl.clone();
+  const original = url.pathname;
+  url.pathname = "/api/serve";
+  url.searchParams.set("__orbixa_path", original);
+  return NextResponse.rewrite(url);
+}

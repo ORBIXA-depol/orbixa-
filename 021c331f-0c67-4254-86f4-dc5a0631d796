@@ -1,0 +1,143 @@
+import type { Policy } from "./index";
+
+export const PLATFORM_POLICIES: Policy[] = [
+  {
+    slug: "security-infrastructure-policy",
+    title: "Security & Infrastructure Policy",
+    kicker: "How the platform defends your code and content",
+    summary: "The engineering and operational controls ORBIXA applies to authentication, isolation, deployment environments, monitoring and incident response.",
+    contact: "security@orbixa.dev",
+    history: [{ version: "1.0", date: "2026-01-15", note: "Initial publication." }],
+    sections: [
+      { h: "1. Commitments and Honest Limits", p: "This policy describes the controls we actually operate. We do not claim certifications we have not obtained. Where a control is on our roadmap rather than in production, we say so in the affected document rather than imply it here." },
+      { h: "2. Encryption", ul: [
+        "In transit: TLS is required on platform endpoints; published sites inherit HTTPS with modern ciphers, HSTS and strict content headers at the serving layer.",
+        "At rest: environment variables and secrets are encrypted with AES-256-GCM using a platform-held key before touching the database; passwords are hashed with bcrypt (cost 12).",
+        "Database and object-storage volumes reside on encrypted infrastructure operated by our hosting providers.",
+      ]},
+      { h: "3. Authentication and Access Control", ul: [
+        "Sessions are signed, expiring JWTs backed by revocable server-side session records; suspending an account immediately invalidates its sessions.",
+        "OAuth sign-in (Google) exchanges codes server-side; client secrets never leave the backend.",
+        "Every project action checks ownership or team role (viewer / developer / admin) server-side on each request.",
+        "Multi-factor authentication: TOTP-based 2FA is on our near-term roadmap; until announced in-product, it is intentionally not claimed. Use a long, unique password today.",
+        "Administrative access inside ORBIXA is restricted to named administrators whose actions are written to the security audit log.",
+      ]},
+      { h: "4. Isolation and Secure Deployment Environments", ul: [
+        "Builds run in dedicated per-deployment workspaces with hardened limits: file-count and size ceilings, zip-slip/traversal rejection, git-metadata and node_modules stripping, and hard timeouts.",
+        "User functions execute inside sandboxed runtime contexts without filesystem, process or module access, under hard CPU/time budgets; dangerous module imports are rejected at deploy time.",
+        "File uploads are signature-checked and size-capped per plan before any byte touches storage.",
+        "Tenant isolation: projects resolve only to their own artifacts; there is no cross-project object access at the serving layer.",
+      ]},
+      { h: "5. Rate Limiting and Abuse Prevention", p: "Authentication, upload, deploy and beacon endpoints enforce per-IP and per-account rate limits. Abuse signals escalate into the enforcement workflow described in the Account Suspension & Enforcement Policy." },
+      { h: "6. Vulnerability Management", ul: [
+        "Public intake under our Responsible Disclosure Policy, with the acknowledgement and resolution targets defined there.",
+        "Platform dependency updates ship on a rolling basis; critical advisories affecting our stack trigger expedited patching.",
+        "Changes to authentication, serving and billing code paths require review before release.",
+      ]},
+      { h: "7. Security Monitoring and Audit Logging", p: "Security events — sign-ins, failures, suspensions, plan changes, administrative actions — are written to an audit log retained for 12 months and visible to platform administrators. Anomalies such as rate-limit storms and repeated authentication failures are investigated upon detection." },
+      { h: "8. Incident Response", ul: [
+        "Triage: incidents are classified (sev-1 platform-down / sev-2 degraded / sev-3 limited impact) and assigned an incident lead.",
+        "Containment: offending deployments can be isolated or unpublished immediately using the same atomic promotion mechanism that powers rollbacks.",
+        "Notification: for confirmed incidents materially affecting your data or availability, we notify affected customers by account email without undue delay and publish a summary where appropriate.",
+        "Targets: sev-1 response within 1 hour during staffed hours; a public incident note within 24 hours of containment.",
+      ]},
+      { h: "9. Customer Obligations", p: "Security is shared: keep dependencies in your deployed projects updated, never commit secrets into site code (use encrypted environment variables), and rotate any token exposed publicly." },
+    ],
+  },
+  {
+    slug: "deployment-hosting-policy",
+    title: "Deployment & Hosting Policy",
+    kicker: "What you can deploy, and how hosting behaves",
+    summary: "Supported frameworks and sources, build and upload restrictions, retention rules, and the availability characteristics of ORBIXA hosting by plan.",
+    contact: "legal@orbixa.dev",
+    history: [{ version: "1.0", date: "2026-01-15", note: "Initial publication." }],
+    sections: [
+      { h: "1. Supported Content and Sources", ul: [
+        "Static sites (HTML/CSS/JS/media) deployed from ZIP archives via dashboard or API.",
+        "GitHub repository imports (public repositories keyless; private with GITHUB_TOKEN configured by the operator) and generic Git https remotes via shallow clone.",
+        "Framework projects with a production build: Next.js (static export via `output: 'export'`), React (Vite/CRA), Vue/Nuxt static, Astro, Svelte/SvelteKit static — output collected from dist, build or out.",
+        "Prebuilt output directories are detected and served directly without re-running your build.",
+        "JavaScript serverless/edge functions attached to a project, live under its /api/ path namespace.",
+      ]},
+      { h: "2. Serving Model", p: "Every ready deployment is published to object storage and atomically promoted to the project URL (/sites/{slug}/, or your verified custom domain). HTML responses carry a first-party cookieless analytics beacon and a <base> tag so path-served assets resolve correctly. Fingerprinted assets receive immutable cache directives; HTML is served no-cache for freshness. SPA fallback to index.html is enabled by default and configurable per project, as are custom redirect rules." },
+      { h: "3. Build Restrictions", ul: [
+        "Build workers enforce a wall-clock timeout (default 240 seconds) which also caps dependency installation.",
+        "Builds receive only the environment variables declared on the project; nothing else about your account is exposed to build code.",
+        "Native toolchains beyond a standard Node/npm environment, interactive installers, and GPU workloads are outside supported scope.",
+        "Archives above your plan's upload limit, or exceeding safety ceilings on file count and extracted size, are rejected before processing.",
+      ]},
+      { h: "4. Limits by Plan", p: "Upload size, storage, bandwidth, projects, build concurrency and seats are defined numerically in the Resource Usage & Fair Usage Policy and enforced by the platform itself at deploy time and request time." },
+      { h: "5. Deployment Retention", ul: [
+        "Ready deployments keep their artifacts and original archives while the project exists, so rollback and redeploy remain one click.",
+        "Failed deployments keep their build logs for diagnosis.",
+        "Deleting a project erases all of its deployments, functions, domains, environment variables, analytics events and stored files.",
+      ]},
+      { h: "6. Previews and Promotion", p: "The active deployment is the single source of truth for what visitors receive. Promotion and rollback are atomic pointer moves at project level — no rebuild, no cache wait. Every version remains individually restorable while retained." },
+      { h: "7. Availability Characteristics", p: "Hosting availability follows your plan's Service Level Agreement. The Free plan is best-efforts. No plan claims availability beyond what the SLA states; this policy does not create additional guarantees." },
+      { h: "8. Scheduled Changes", p: "Maintenance with material customer impact is announced in advance per the SLA. Emergency changes addressing security or integrity may proceed without advance notice, with follow-up communication." },
+    ],
+  },
+  {
+    slug: "service-level-agreement",
+    title: "Service Level Agreement",
+    kicker: "Measured promises — no inflated guarantees",
+    summary: "Availability targets, measurement method, maintenance windows, incident communication and service credits. Free and Pro run best-efforts targets; only Business carries contractual remedies.",
+    contact: "legal@orbixa.dev",
+    history: [{ version: "1.0", date: "2026-01-15", note: "Initial publication." }],
+    sections: [
+      { h: "1. Scope and Honesty Note", p: "This SLA commits only to what ORBIXA can technically measure and contractually support. We deliberately do not advertise an unconditional uptime guarantee: Free and Pro plans are offered on commercially reasonable best-efforts, and the Business plan carries the specific, measurable commitments and remedies below — nothing more, nothing vaguer." },
+      { h: "2. Definitions", ul: [
+        "\"Monthly Uptime Percentage\": minutes the production serving path answers non-5xx within expected latency, divided by total minutes in the month, measured by our edge-side request logs and independent probes where available.",
+        "\"Excluded Minutes\": scheduled maintenance announced 72h ahead (max 4h/month), emergency security maintenance, force majeure, your own DNS/content errors, and third-party networks between you and us.",
+      ]},
+      { h: "3. Targets and Credits", ul: [
+        "Free plan: best-efforts hosting; no credit entitlement.",
+        "Pro plan: 99.9% Monthly Uptime target for the serving path. If we measure and confirm a month below target, affected Pro accounts receive, on request, a 3-day service extension per incident month — the sole remedy at this tier.",
+        "Business plan: 99.95% Monthly Uptime commitment for the serving path. Confirmed shortfall earns service credits: 5% of the month below 99.95%, 10% below 99.5%, 25% below 99.0%. Credits apply to future invoices and are the exclusive remedy for availability.",
+        "Build pipeline and admin APIs are targeted at 99.5% monthly for paid plans (no credits; best-efforts recovery).",
+      ]},
+      { h: "4. Claiming a Credit", p: "Email legal@orbixa.dev within 30 days of the month's end with the affected project(s) and observed impact. We verify against our logs, respond within 10 business days, and apply confirmed credits to your next invoice." },
+      { h: "5. Maintenance and Communication", ul: [
+        "Scheduled maintenance: announced in-product and by email at least 72 hours in advance where impact is expected.",
+        "Incidents: sev-1/sev-2 events are communicated in-product during the event, with a follow-up summary after mitigation for material events.",
+        "Status: the /api/health endpoint provides a machine-readable liveness signal.",
+      ]},
+      { h: "6. Support Responsibilities", ul: [
+        "Community (Free): documentation and community channels; no response-time commitment.",
+        "Pro: email support, target first response within 2 business days.",
+        "Business: priority email support, target first response within 8 staffed hours for production-down issues.",
+        "Support covers the platform, not debugging your application code — though we will tell you when evidence points into your content.",
+      ]},
+      { h: "7. Exclusions", p: "This SLA does not apply to: beta features labeled as such, outages you cause (including AUP violations we act on), third-party services covered by the Third-Party Services Policy, or any period where your account is suspended." },
+    ],
+  },
+  {
+    slug: "resource-usage-policy",
+    title: "Resource Usage & Fair Usage Policy",
+    kicker: "Transparent limits, enforced by the platform itself",
+    summary: "The numeric allowances of each plan — bandwidth, storage, build time, concurrency, API and function use, seats — plus what happens when you exceed them.",
+    contact: "legal@orbixa.dev",
+    history: [{ version: "1.0", date: "2026-01-15", note: "Initial publication." }],
+    sections: [
+      { h: "1. Plan Allowances", ul: [
+        "Free: 3 projects · 512 MB storage · 10 GB bandwidth per calendar month · 25 MB per-upload · 1 seat · community support.",
+        "Pro: 25 projects · 10 GB storage · 1 TB monthly bandwidth · 150 MB per-upload · 5 seats · email support.",
+        "Business: unlimited projects (fair-use capped at 999 active) · 100 GB storage · 10 TB monthly bandwidth · 500 MB per-upload · 50 seats · priority support.",
+      ]},
+      { h: "2. Build and Compute Limits", ul: [
+        "Builds run with a platform wall-clock timeout (default 240s) and sequential per-project concurrency: one active build per project at a time; additional deploys queue.",
+        "Deployments are rate-limited per account (bursts allowed, sustained abuse throttled).",
+        "Serverless/edge functions execute under a 3-second CPU budget per invocation with invocations counted and displayed; sustained extreme invocation volume on Free/Pro may be throttled after notice.",
+        "API requests are rate-limited per IP on auth and write endpoints; platform-essential reads are not counted against you.",
+      ]},
+      { h: "3. Measurement", p: "Bandwidth is metered per-request at the serving layer (full response bytes). Storage is the sum of retained deployment artifacts and archives. Both are visible on your dashboard and billing page in real time — the numbers you see are the numbers enforced." },
+      { h: "4. Exceeding Your Plan", ul: [
+        "Hard caps: project creation and upload size are enforced at the action: the platform rejects with a clear upgrade path (HTTP 402) rather than failing silently.",
+        "Monthly metered resources: at 100% of plan bandwidth we notify; sustained operation at or above 110% allows us to throttle delivery after 48 hours' notice, except where immediate throttling is needed to protect other tenants.",
+        "Build abuse: automated deploy loops engineered to consume worker time may be paused pending discussion.",
+      ]},
+      { h: "5. Upgrades and Overages", p: "Upgrading takes effect immediately, with the new plan's allowances applying from the moment of activation. We do not levy surprise overage invoices: where a metered resource would run materially past plan on a recurring basis, we will ask you to upgrade or optimize instead — recurring excess on Business is handled by a custom capacity agreement via legal@orbixa.dev." },
+      { h: "6. Fair-Use Spirit", p: "Unlimited-style allowances assume ordinary website workloads: pages, assets, forms and functions serving humans. Content that is disproportionately resource-intensive per dollar (e.g., large-file mirrors, high-frequency machine polling) needs a conversation, and possibly a custom plan — not a stealth workaround." },
+    ],
+  },
+];

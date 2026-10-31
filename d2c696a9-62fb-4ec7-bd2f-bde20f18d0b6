@@ -1,0 +1,51 @@
+import { NextRequest } from "next/server";
+import { db } from "@/db";
+import { projects } from "@/db/schema";
+import { and, eq } from "drizzle-orm";
+import { requireUser, json, rateLimit, clientIp } from "@/lib/auth";
+import { launchDeployment } from "@/lib/launch";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
+type Ctx = { params: Promise<{ id: string }> };
+
+export async function POST(req: NextRequest, ctx: Ctx) {
+  const user = await requireUser();
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  const ip = clientIp(req);
+  if (!rateLimit(`deploy:${user.id}`, 30, 60_000)) return json({ error: "Deploy rate limit reached. Slow down." }, 429);
+  const { id } = await ctx.params;
+  const rows = await db.select().from(projects).where(and(eq(projects.id, id), eq(projects.ownerId, user.id))).limit(1);
+  if (!rows[0]) return json({ error: "Project not found." }, 404);
+
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return json({ error: "Expected multipart/form-data with a 'file' field." }, 400);
+  }
+  const file = form.get("file");
+  if (!(file instanceof File)) return json({ error: "Attach a .zip archive as the 'file' field." }, 400);
+  if (!file.name.toLowerCase().endsWith(".zip")) return json({ error: "Only .zip archives are accepted." }, 400);
+  const buf = Buffer.from(await file.arrayBuffer());
+  if (buf.byteLength < 64) return json({ error: "Archive appears empty or corrupt." }, 400);
+  // ZIP magic check (PK\x03\x04) — basic upload validation.
+  if (!(buf[0] === 0x50 && buf[1] === 0x4b)) return json({ error: "Invalid ZIP signature." }, 400);
+
+  try {
+    const { deployment, project } = await launchDeployment({
+      projectId: id,
+      userId: user.id,
+      source: "upload",
+      sourceMeta: file.name,
+      zip: buf,
+    });
+    void ip;
+    return json({ deployment, siteUrl: `/sites/${project.slug}/` }, 201);
+  } catch (e) {
+    const err = e as { message?: string; status?: number };
+    return json({ error: err.message ?? "Deploy failed" }, err.status ?? 500);
+  }
+}

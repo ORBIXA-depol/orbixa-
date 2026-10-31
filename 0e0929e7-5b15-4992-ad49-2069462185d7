@@ -1,0 +1,86 @@
+import { NextRequest } from "next/server";
+import { db } from "@/db";
+import { subscriptions, plans, invoices, activities } from "@/db/schema";
+import { desc, eq } from "drizzle-orm";
+import { requireUser, json, logSecurity, clientIp } from "@/lib/auth";
+import { randomToken } from "@/lib/utils";
+
+export const runtime = "nodejs";
+
+/**
+ * Plan subscription. When STRIPE_SECRET_KEY is configured a real Stripe
+ * Checkout Session is created and its URL returned. Otherwise the platform
+ * runs in its built-in billing mode (clearly labeled "ORBIXA Payments") and
+ * records a fully auditable invoice.
+ */
+export async function POST(req: NextRequest) {
+  const user = await requireUser();
+  if (!user) return json({ error: "Unauthorized" }, 401);
+  let body: { planId?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid request body." }, 400);
+  }
+  const planRows = await db.select().from(plans).where(eq(plans.id, body.planId ?? "")).limit(1);
+  const plan = planRows[0];
+  if (!plan) return json({ error: "Unknown plan." }, 400);
+
+  const stripeKey = process.env.STRIPE_SECRET_KEY;
+  if (stripeKey && plan.priceMonthly > 0) {
+    try {
+      const priceEnv = process.env[`STRIPE_PRICE_${plan.id.toUpperCase()}`];
+      const origin = req.nextUrl.origin;
+      const params = new URLSearchParams({
+        mode: "subscription",
+        success_url: `${origin}/dashboard/billing?upgraded=1`,
+        cancel_url: `${origin}/dashboard/billing?canceled=1`,
+        "customer_email": user.email,
+        ...(priceEnv
+          ? { "line_items[0][price]": priceEnv, "line_items[0][quantity]": "1" }
+          : {
+              "line_items[0][price_data][currency]": "usd",
+              "line_items[0][price_data][unit_amount]": String(plan.priceMonthly),
+              "line_items[0][price_data][recurring][interval]": "month",
+              "line_items[0][price_data][product_data][name]": `ORBIXA ${plan.name}`,
+              "line_items[0][quantity]": "1",
+            }),
+      });
+      const res = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+        method: "POST",
+        headers: { authorization: `Bearer ${stripeKey}`, "content-type": "application/x-www-form-urlencoded" },
+        body: params,
+      });
+      const sess = (await res.json()) as { url?: string; id?: string; error?: { message?: string } };
+      if (sess.url) {
+        await db.insert(invoices).values({
+          userId: user.id, planId: plan.id, amountCents: plan.priceMonthly, status: "open",
+          description: `ORBIXA ${plan.name} — monthly`, provider: "stripe", providerRef: sess.id,
+        });
+        return json({ checkoutUrl: sess.url, provider: "stripe" });
+      }
+      return json({ error: sess.error?.message ?? "Stripe checkout failed" }, 502);
+    } catch (e) {
+      return json({ error: `Stripe unreachable: ${e instanceof Error ? e.message : "unknown"}` }, 502);
+    }
+  }
+
+  // Built-in billing (no external processor configured)
+  const current = await db.select().from(subscriptions).where(eq(subscriptions.userId, user.id)).orderBy(desc(subscriptions.createdAt)).limit(1);
+  const periodEnd = new Date();
+  periodEnd.setMonth(periodEnd.getMonth() + 1);
+  if (current[0]) {
+    await db.update(subscriptions).set({ planId: plan.id, status: "active", currentPeriodEnd: periodEnd, provider: "orbixa" }).where(eq(subscriptions.id, current[0].id));
+  } else {
+    await db.insert(subscriptions).values({ userId: user.id, planId: plan.id, status: "active", currentPeriodEnd: periodEnd });
+  }
+  if (plan.priceMonthly > 0) {
+    await db.insert(invoices).values({
+      userId: user.id, planId: plan.id, amountCents: plan.priceMonthly, status: "paid",
+      description: `ORBIXA ${plan.name} — monthly (built-in billing)`, provider: "orbixa", providerRef: `inv_${randomToken(8)}`,
+    });
+  }
+  await db.insert(activities).values({ userId: user.id, action: "billing.plan_changed", detail: `Switched to ${plan.name}` });
+  await logSecurity("billing.plan_changed", clientIp(req), `${user.email} → ${plan.id}`, user.id);
+  return json({ ok: true, provider: "orbixa", plan: plan.id });
+}

@@ -1,0 +1,32 @@
+import { NextRequest } from "next/server";
+import bcrypt from "bcryptjs";
+import { db } from "@/db";
+import { authTokens, users } from "@/db/schema";
+import { and, eq, isNull, gt } from "drizzle-orm";
+import { json, rateLimit, clientIp, logSecurity } from "@/lib/auth";
+
+export const runtime = "nodejs";
+
+export async function POST(req: NextRequest) {
+  const ip = clientIp(req);
+  if (!rateLimit(`reset:${ip}`, 8, 60_000)) return json({ error: "Too many attempts." }, 429);
+  let body: { token?: string; password?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid request." }, 400);
+  }
+  const token = body.token ?? "";
+  const password = body.password ?? "";
+  if (password.length < 8) return json({ error: "Password must be at least 8 characters." }, 400);
+  const rows = await db
+    .select()
+    .from(authTokens)
+    .where(and(eq(authTokens.token, token), eq(authTokens.type, "reset_password"), isNull(authTokens.usedAt), gt(authTokens.expiresAt, new Date())))
+    .limit(1);
+  if (!rows[0]) return json({ error: "This reset link is invalid or has expired." }, 400);
+  await db.update(authTokens).set({ usedAt: new Date() }).where(eq(authTokens.id, rows[0].id));
+  await db.update(users).set({ passwordHash: await bcrypt.hash(password, 12), emailVerified: true }).where(eq(users.id, rows[0].userId));
+  await logSecurity("password.reset.completed", ip, `user ${rows[0].userId}`, rows[0].userId);
+  return json({ ok: true });
+}

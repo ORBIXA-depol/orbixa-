@@ -1,0 +1,25 @@
+import { db } from "@/db";
+import { policyAcceptances } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { currentUser, json } from "@/lib/auth";
+import { POLICIES, BINDING_POLICY_IDS, currentVersion, getPolicy } from "@/lib/legal";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+/** Which binding policies the signed-in user has not yet accepted at their current version. */
+export async function GET() {
+  const user = await currentUser();
+  if (!user) return json({ pending: [], accepted: [] }, 401);
+  const rows = await db.select().from(policyAcceptances).where(eq(policyAcceptances.userId, user.id));
+  const acceptedKeys = new Set(rows.map((r) => `${r.policyId}@${r.version}`));
+  const pending = BINDING_POLICY_IDS.map((id) => {
+    const p = getPolicy(id)!;
+    return { slug: p.slug, title: p.title, version: currentVersion(p) };
+  }).filter((p) => !acceptedKeys.has(`${p.slug}@${p.version}`));
+  return json({
+    pending,
+    accepted: rows.map((r) => ({ slug: r.policyId, version: r.version, acceptedAt: r.acceptedAt })).sort((a, b) => +new Date(b.acceptedAt) - +new Date(a.acceptedAt)),
+    totalPolicies: POLICIES.length,
+  });
+}

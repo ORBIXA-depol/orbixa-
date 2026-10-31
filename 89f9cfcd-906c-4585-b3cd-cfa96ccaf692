@@ -1,0 +1,83 @@
+import vm from "node:vm";
+import { db } from "@/db";
+import { envVars } from "@/db/schema";
+import { eq, sql } from "drizzle-orm";
+import { decryptSecret } from "./crypto";
+
+export const runtime = "nodejs";
+
+export type FnRequest = {
+  method: string;
+  path: string;
+  query: Record<string, string>;
+  headers: Record<string, string>;
+  body: string;
+};
+
+export type FnResponse = { status: number; headers: Record<string, string>; body: string };
+
+const FN_TIMEOUT = 3000; // hard CPU limit per invocation
+
+/**
+ * Executes a user function in an isolated V8 context (no require, no fs,
+ * no network beyond fetch stub returning an error). Real isolation boundary
+ * is the vm context + hard timeout; production deployments should pair this
+ * with a separate worker process / container per project.
+ */
+export async function runFunction(code: string, req: FnRequest, projectId?: string): Promise<FnResponse> {
+  const env: Record<string, string> = {};
+  if (projectId) {
+    try {
+      const rows = await db.select().from(envVars).where(eq(envVars.projectId, projectId));
+      for (const r of rows) env[r.key] = await decryptSecret(r.valueEnc);
+    } catch { /* env load failure is non-fatal */ }
+  }
+
+  const sandbox: Record<string, unknown> = {
+    request: JSON.parse(JSON.stringify(req)),
+    env,
+    console: {
+      log: () => {}, warn: () => {}, error: () => {},
+    },
+    JSON, Math, Date, parseInt, parseFloat, isNaN, isFinite,
+    encodeURIComponent, decodeURIComponent, btoa: (s: string) => Buffer.from(s, "binary").toString("base64"),
+    atob: (s: string) => Buffer.from(s, "base64").toString("binary"),
+    setTimeout: undefined, setInterval: undefined, fetch: undefined, require: undefined, process: undefined,
+    __result: undefined,
+  };
+
+  const wrapped = `
+    (function(){
+      var module = { exports: {} };
+      var exports = module.exports;
+      ${code}
+      var handler = module.exports.handler || module.exports.default || (typeof handler === 'function' ? handler : null);
+      if (!handler) throw new Error('Function must export a handler: module.exports.handler = (request, env) => ({...})');
+      var out = handler(request, env) || {};
+      __result = {
+        status: typeof out.status === 'number' ? out.status : 200,
+        headers: out.headers || { 'content-type': 'application/json' },
+        body: typeof out.body === 'string' ? out.body : JSON.stringify(out.body ?? out)
+      };
+    })();
+  `;
+
+  const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
+  try {
+    const script = new vm.Script(wrapped);
+    script.runInContext(context, { timeout: FN_TIMEOUT, breakOnSigint: true });
+    const res = sandbox.__result as FnResponse | undefined;
+    if (!res) throw new Error("Function produced no result");
+    return res;
+  } catch (e) {
+    return {
+      status: 500,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ error: "Function execution failed", message: e instanceof Error ? e.message : String(e) }),
+    };
+  }
+}
+
+export async function incrementFnCount(id: string) {
+  await db.execute(sql`update serverless_fns set invocations = invocations + 1 where id = ${id}`);
+}

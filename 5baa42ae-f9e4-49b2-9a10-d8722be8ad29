@@ -1,0 +1,79 @@
+import { NextRequest } from "next/server";
+import { db } from "@/db";
+import { users, projects, subscriptions, sessions } from "@/db/schema";
+import { desc, eq, ilike, or, sql } from "drizzle-orm";
+import { requireAdmin, json, logSecurity, clientIp } from "@/lib/auth";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET(req: NextRequest) {
+  const admin = await requireAdmin();
+  if (!admin) return json({ error: "Forbidden" }, 403);
+  const q = req.nextUrl.searchParams.get("q")?.trim() ?? "";
+  const conds = q ? or(ilike(users.email, `%${q}%`), ilike(users.name, `%${q}%`)) : undefined;
+  const rows = await db
+    .select({
+      id: users.id, email: users.email, name: users.name, role: users.role,
+      suspended: users.suspended, emailVerified: users.emailVerified, createdAt: users.createdAt,
+      projectCount: sql<number>`(select count(*) from projects p where p.owner_id = ${users.id})`,
+      planId: sql<string>`(select s.plan_id from subscriptions s where s.user_id = ${users.id} order by s.created_at desc limit 1)`,
+    })
+    .from(users)
+    .where(conds)
+    .orderBy(desc(users.createdAt))
+    .limit(200);
+  return json({ users: rows });
+}
+
+export async function PATCH(req: NextRequest) {
+  const admin = await requireAdmin();
+  if (!admin) return json({ error: "Forbidden" }, 403);
+  let body: { userId?: string; action?: string; role?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid request body." }, 400);
+  }
+  const target = await db.select().from(users).where(eq(users.id, body.userId ?? "")).limit(1);
+  if (!target[0]) return json({ error: "User not found." }, 404);
+  if (target[0].id === admin.id && body.action === "suspend") return json({ error: "You cannot suspend yourself." }, 400);
+
+  if (body.action === "suspend") {
+    await db.update(users).set({ suspended: !target[0].suspended }).where(eq(users.id, target[0].id));
+    if (!target[0].suspended) await db.delete(sessions).where(eq(sessions.userId, target[0].id));
+    await logSecurity("admin.user_suspended", clientIp(req), `${admin.email} toggled ${target[0].email} suspended=${!target[0].suspended}`, admin.id);
+    return json({ ok: true, suspended: !target[0].suspended });
+  }
+  if (body.action === "role") {
+    const role = body.role === "admin" ? "admin" : "user";
+    await db.update(users).set({ role }).where(eq(users.id, target[0].id));
+    await logSecurity("admin.user_role", clientIp(req), `${admin.email} set ${target[0].email} role=${role}`, admin.id);
+    return json({ ok: true, role });
+  }
+  if (body.action === "plan") {
+    const planId = ["free", "pro", "business"].includes(body.role ?? "") ? body.role! : "free";
+    const sub = await db.select().from(subscriptions).where(eq(subscriptions.userId, target[0].id)).orderBy(desc(subscriptions.createdAt)).limit(1);
+    if (sub[0]) await db.update(subscriptions).set({ planId }).where(eq(subscriptions.id, sub[0].id));
+    else await db.insert(subscriptions).values({ userId: target[0].id, planId, status: "active" });
+    await logSecurity("admin.user_plan", clientIp(req), `${admin.email} set ${target[0].email} plan=${planId}`, admin.id);
+    return json({ ok: true, planId });
+  }
+  return json({ error: "Unknown action." }, 400);
+}
+
+export async function DELETE(req: NextRequest) {
+  const admin = await requireAdmin();
+  if (!admin) return json({ error: "Forbidden" }, 403);
+  const userId = req.nextUrl.searchParams.get("userId") ?? "";
+  if (userId === admin.id) return json({ error: "You cannot delete yourself." }, 400);
+  const target = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  if (!target[0]) return json({ error: "User not found." }, 404);
+  // Remove user's projects (files cleaned up asynchronously by storage GC in production)
+  await db.delete(projects).where(eq(projects.ownerId, userId));
+  await db.delete(sessions).where(eq(sessions.userId, userId));
+  await db.delete(subscriptions).where(eq(subscriptions.userId, userId));
+  await db.delete(users).where(eq(users.id, userId));
+  await logSecurity("admin.user_deleted", clientIp(req), `${admin.email} deleted ${target[0].email}`, admin.id);
+  return json({ ok: true });
+}

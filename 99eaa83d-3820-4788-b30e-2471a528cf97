@@ -1,0 +1,308 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import {
+  ArrowLeft, ServerCog, Users, CloudUpload, ShieldCheck, Settings2, Activity,
+  Cpu, Database, HardDrive, MemoryStick, Search, Trash2, Ban, CheckCircle2, Mail,
+} from "lucide-react";
+import { Avatar, StatusBadge, FrameworkBadge } from "@/components/ui";
+import { Meter } from "@/components/charts";
+import { fmtBytes, timeAgo } from "@/lib/utils";
+import { ThemeToggle } from "@/components/theme";
+import { Logo } from "@/components/logo";
+
+type Overview = {
+  totals: { users: number; projects: number; deployments: number; events: number; revenueCents: number };
+  deploymentsByStatus: { status: string; count: number }[];
+  recentDeployments: { id: string; status: string; source: string; framework: string; createdAt: string; durationMs: number | null; projectName: string; slug: string; ownerEmail: string }[];
+  securityLogs: { id: string; event: string; ip: string | null; detail: string | null; createdAt: string }[];
+  infra: {
+    dbLatencyMs: number; nodeVersion: string; uptimeSec: number; rssMb: number; heapMb: number;
+    loadAvg: number[]; cpus: number; freeMemMb: number; totalMemMb: number; storageBytes: number; platform: string;
+  };
+};
+type AdminUser = { id: string; email: string; name: string; role: string; suspended: boolean; emailVerified: boolean; createdAt: string; projectCount: number; planId: string | null };
+type Config = { config: Record<string, string>; outbox: { id: string; to: string; subject: string; body: string; sentAt: string | null; createdAt: string }[]; integrations: Record<string, boolean> };
+
+const TABS = [
+  { id: "infra", label: "Infrastructure", icon: ServerCog },
+  { id: "users", label: "Users", icon: Users },
+  { id: "deploys", label: "Deployments", icon: CloudUpload },
+  { id: "security", label: "Security Logs", icon: ShieldCheck },
+  { id: "config", label: "Platform Config", icon: Settings2 },
+] as const;
+
+export function AdminConsole() {
+  const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("infra");
+  const [ov, setOv] = useState<Overview | null>(null);
+
+  const refresh = useCallback(async () => {
+    const r = await fetch("/api/admin/overview", { cache: "no-store" });
+    if (r.ok) setOv(await r.json());
+  }, []);
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 8000);
+    return () => clearInterval(t);
+  }, [refresh]);
+
+  return (
+    <div className="min-h-screen">
+      <header className="sticky top-0 z-20 glass border-b border-[var(--line)] px-5 h-16 flex items-center gap-4">
+        <Logo size={28} />
+        <span className="chip !text-[9px] !text-[var(--amber)] !border-[rgba(251,191,36,.4)]">ADMIN CONSOLE</span>
+        <div className="ml-auto flex items-center gap-2.5">
+          <ThemeToggle />
+          <Link href="/dashboard" className="btn btn-ghost !py-2 !text-xs"><ArrowLeft size={13} /> Dashboard</Link>
+        </div>
+      </header>
+      <div className="max-w-[1300px] mx-auto p-5 sm:p-7 space-y-6">
+        <div className="flex gap-1.5 overflow-x-auto border-b border-[var(--line)]">
+          {TABS.map((t) => (
+            <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-2 px-4 py-2.5 text-[13px] font-medium whitespace-nowrap border-b-2 transition-colors ${tab === t.id ? "border-[var(--violet)] text-[var(--text)]" : "border-transparent text-[var(--faint)] hover:text-[var(--muted)]"}`}>
+              <t.icon size={14} /> {t.label}
+            </button>
+          ))}
+        </div>
+
+        {tab === "infra" && (ov ? <InfraTab ov={ov} /> : <div className="skeleton h-72" />)}
+        {tab === "users" && <UsersTab />}
+        {tab === "deploys" && (ov ? <DeploysTab ov={ov} /> : <div className="skeleton h-72" />)}
+        {tab === "security" && (ov ? <SecurityTab ov={ov} /> : <div className="skeleton h-72" />)}
+        {tab === "config" && <ConfigTab />}
+      </div>
+    </div>
+  );
+}
+
+function InfraTab({ ov }: { ov: Overview }) {
+  const i = ov.infra;
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        {[
+          ["Total users", ov.totals.users, "#7c5cff"],
+          ["Projects", ov.totals.projects, "#38bdf8"],
+          ["Deployments", ov.totals.deployments, "#34d399"],
+          ["Analytics events", ov.totals.events, "#fbbf24"],
+          ["Revenue", `$${(ov.totals.revenueCents / 100).toFixed(0)}`, "#f472b6"],
+        ].map(([l, v, c]) => (
+          <div key={l as string} className="card p-5">
+            <div className="text-[10px] tracking-[0.14em] uppercase text-[var(--faint)] font-semibold">{l}</div>
+            <div className="font-display font-bold text-[26px] mt-2 mono-nums" style={{ color: c as string }}>{v as string}</div>
+          </div>
+        ))}
+      </div>
+      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="card p-5">
+          <div className="flex items-center gap-2 text-xs font-semibold text-[var(--muted)] mb-3"><Cpu size={13} className="text-[var(--violet-2)]" /> CPU LOAD ({i.cpus} cores)</div>
+          <Meter value={i.loadAvg[0]} max={i.cpus} />
+          <div className="font-code text-[11px] text-[var(--faint)] mt-2">{i.loadAvg.join(" · ")} (1m 5m 15m)</div>
+        </div>
+        <div className="card p-5">
+          <div className="flex items-center gap-2 text-xs font-semibold text-[var(--muted)] mb-3"><MemoryStick size={13} className="text-[var(--blue)]" /> MEMORY</div>
+          <Meter value={i.totalMemMb - i.freeMemMb} max={i.totalMemMb} color="var(--blue)" />
+          <div className="font-code text-[11px] text-[var(--faint)] mt-2">proc rss {i.rssMb} MB · heap {i.heapMb} MB</div>
+        </div>
+        <div className="card p-5">
+          <div className="flex items-center gap-2 text-xs font-semibold text-[var(--muted)] mb-3"><Database size={13} className="text-[var(--green)]" /> POSTGRESQL</div>
+          <div className="font-display font-bold text-2xl">{i.dbLatencyMs} <span className="text-xs text-[var(--faint)] font-code">ms latency</span></div>
+          <div className="font-code text-[11px] text-[var(--faint)] mt-1.5">node-postgres pool · {i.nodeVersion}</div>
+        </div>
+        <div className="card p-5">
+          <div className="flex items-center gap-2 text-xs font-semibold text-[var(--muted)] mb-3"><HardDrive size={13} className="text-[var(--amber)]" /> OBJECT STORAGE</div>
+          <div className="font-display font-bold text-2xl">{fmtBytes(i.storageBytes)}</div>
+          <div className="font-code text-[11px] text-[var(--faint)] mt-1.5">{i.platform} · uptime {Math.floor(i.uptimeSec / 60)}m</div>
+        </div>
+      </div>
+      <div className="card p-6">
+        <h3 className="font-display font-semibold mb-4 flex items-center gap-2"><Activity size={15} className="text-[var(--violet-2)]" /> Deployments by status</h3>
+        <div className="flex gap-6 flex-wrap">
+          {ov.deploymentsByStatus.map((s) => (
+            <div key={s.status} className="flex items-center gap-2.5"><StatusBadge status={s.status} /><span className="font-code font-bold">{s.count}</span></div>
+          ))}
+          {ov.deploymentsByStatus.length === 0 && <span className="text-[13px] text-[var(--faint)]">No deployments yet.</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UsersTab() {
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [q, setQ] = useState("");
+  const [msg, setMsg] = useState("");
+  const load = useCallback(async () => {
+    const r = await fetch(`/api/admin/users?q=${encodeURIComponent(q)}`, { cache: "no-store" });
+    if (r.ok) setUsers((await r.json()).users);
+  }, [q]);
+  useEffect(() => { const t = setTimeout(load, 250); return () => clearTimeout(t); }, [load]);
+
+  const act = async (userId: string, action: string, role?: string) => {
+    const r = await fetch("/api/admin/users", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ userId, action, role }) });
+    if (r.ok) { setMsg("Updated."); load(); } else setMsg("Action failed.");
+    setTimeout(() => setMsg(""), 2500);
+  };
+
+  return (
+    <div className="card p-6">
+      <div className="flex items-center gap-3 mb-5 flex-wrap">
+        <h3 className="font-display font-semibold">User management</h3>
+        {msg && <span className="text-xs text-[var(--green)]">{msg}</span>}
+        <div className="relative ml-auto">
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--faint)]" />
+          <input className="input !pl-8 !py-2 !text-[12.5px]" placeholder="Search users…" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="text-left text-[10px] tracking-[0.12em] text-[var(--faint)] uppercase border-b border-[var(--line)]">
+              <th className="pb-3 pr-4 font-semibold">User</th><th className="pb-3 pr-4 font-semibold">Plan</th><th className="pb-3 pr-4 font-semibold">Projects</th><th className="pb-3 pr-4 font-semibold">Status</th><th className="pb-3 pr-4 font-semibold">Joined</th><th className="pb-3 font-semibold text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.id} className="border-b border-[var(--line)] last:border-0">
+                <td className="py-3 pr-4">
+                  <div className="flex items-center gap-2.5">
+                    <Avatar name={u.name} hue={(u.email.charCodeAt(0) * 7) % 360} size={28} />
+                    <div><div className="font-medium">{u.name}</div><div className="text-[11px] text-[var(--faint)]">{u.email}{u.role === "admin" && <span className="text-[var(--amber)] ml-1.5">ADMIN</span>}</div></div>
+                  </div>
+                </td>
+                <td className="py-3 pr-4 font-code text-[12px]">{u.planId ?? "free"}</td>
+                <td className="py-3 pr-4 font-code">{u.projectCount}</td>
+                <td className="py-3 pr-4">{u.suspended ? <span className="text-[11px] font-semibold text-[var(--red)]">SUSPENDED</span> : <span className="text-[11px] font-semibold text-[var(--green)]">ACTIVE</span>}</td>
+                <td className="py-3 pr-4 text-[var(--muted)] text-[12px]">{new Date(u.createdAt).toLocaleDateString()}</td>
+                <td className="py-3">
+                  <div className="flex justify-end gap-1.5">
+                    <button title={u.suspended ? "Unsuspend" : "Suspend"} className="btn btn-ghost !p-2" onClick={() => act(u.id, "suspend")}>{u.suspended ? <CheckCircle2 size={13} /> : <Ban size={13} />}</button>
+                    <button title="Toggle admin" className={`btn !p-2 ${u.role === "admin" ? "btn-danger" : "btn-ghost"}`} onClick={() => act(u.id, "role", u.role === "admin" ? "user" : "admin")}><ShieldCheck size={13} /></button>
+                    <select className="input !w-auto !py-1.5 !px-2 !text-[11px]" value={u.planId ?? "free"} onChange={(e) => act(u.id, "plan", e.target.value)}>
+                      <option value="free">free</option><option value="pro">pro</option><option value="business">business</option>
+                    </select>
+                    <button title="Delete user" className="btn btn-danger !p-2" onClick={async () => {
+                      if (!confirm(`Delete ${u.email} and all their projects?`)) return;
+                      await fetch(`/api/admin/users?userId=${u.id}`, { method: "DELETE" });
+                      load();
+                    }}><Trash2 size={13} /></button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function DeploysTab({ ov }: { ov: Overview }) {
+  return (
+    <div className="card p-6">
+      <h3 className="font-display font-semibold mb-5">Deployment monitoring — latest across the platform</h3>
+      <div className="space-y-2.5">
+        {ov.recentDeployments.map((d) => (
+          <div key={d.id} className="flex items-center gap-3 flex-wrap rounded-xl border border-[var(--line)] px-4 py-3 text-[12.5px]">
+            <StatusBadge status={d.status} />
+            <span className="font-medium">{d.projectName}</span>
+            <FrameworkBadge fw={d.framework} />
+            <span className="font-code text-[11px] text-[var(--faint)]">{d.source} · {d.ownerEmail}</span>
+            <span className="ml-auto font-code text-[11px] text-[var(--faint)]">{timeAgo(d.createdAt)}{d.durationMs ? ` · ${(d.durationMs / 1000).toFixed(1)}s` : ""}</span>
+          </div>
+        ))}
+        {ov.recentDeployments.length === 0 && <p className="text-[13px] text-[var(--faint)]">No deployments recorded.</p>}
+      </div>
+    </div>
+  );
+}
+
+function SecurityTab({ ov }: { ov: Overview }) {
+  return (
+    <div className="card p-6">
+      <h3 className="font-display font-semibold mb-5 flex items-center gap-2"><ShieldCheck size={15} className="text-[var(--green)]" /> Security audit log</h3>
+      <div className="space-y-2 font-code text-[12px]">
+        {ov.securityLogs.map((l) => (
+          <div key={l.id} className="flex items-center gap-3 flex-wrap rounded-lg border border-[var(--line)] px-3.5 py-2.5">
+            <span className={`font-semibold ${l.event.includes("failed") || l.event.includes("blocked") || l.event.includes("ratelimited") ? "text-[var(--red)]" : "text-[var(--green)]"}`}>{l.event}</span>
+            <span className="text-[var(--muted)] truncate flex-1">{l.detail}</span>
+            <span className="text-[var(--faint)]">{l.ip}</span>
+            <span className="text-[var(--faint)]">{timeAgo(l.createdAt)}</span>
+          </div>
+        ))}
+        {ov.securityLogs.length === 0 && <p className="text-[13px] text-[var(--faint)]">No security events recorded.</p>}
+      </div>
+    </div>
+  );
+}
+
+function ConfigTab() {
+  const [data, setData] = useState<Config | null>(null);
+  const [msg, setMsg] = useState("");
+  const load = useCallback(async () => {
+    const r = await fetch("/api/admin/config", { cache: "no-store" });
+    if (r.ok) setData(await r.json());
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  if (!data) return <div className="skeleton h-72" />;
+  const toggle = (key: string) => data.config[key] === "true";
+  return (
+    <div className="grid lg:grid-cols-2 gap-5 items-start">
+      <div className="card p-6 space-y-5">
+        <h3 className="font-display font-semibold">Platform configuration</h3>
+        <label className="flex items-center gap-3 text-sm cursor-pointer">
+          <button
+            role="switch" aria-checked={toggle("registration_enabled")}
+            onClick={async () => {
+              await fetch("/api/admin/config", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ registration_enabled: toggle("registration_enabled") ? "false" : "true" }) });
+              load();
+            }}
+            className={`w-10 h-6 rounded-full relative transition-colors ${toggle("registration_enabled") ? "bg-[var(--violet)]" : "bg-[var(--line-strong)]"}`}
+          >
+            <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${toggle("registration_enabled") ? "left-[18px]" : "left-0.5"}`} />
+          </button>
+          Public registration enabled
+        </label>
+        <div>
+          <label className="label">Maintenance notice (shown platform-wide)</label>
+          <input className="input" defaultValue={data.config.maintenance_notice} placeholder="e.g. Scheduled maintenance Sunday 02:00 UTC" onBlur={async (e) => {
+            await fetch("/api/admin/config", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ maintenance_notice: e.target.value }) });
+            setMsg("Saved."); setTimeout(() => setMsg(""), 2000);
+          }} />
+        </div>
+        {msg && <p className="text-xs text-[var(--green)]">{msg}</p>}
+        <div>
+          <label className="label">External integrations</label>
+          <div className="grid grid-cols-2 gap-2.5">
+            {Object.entries(data.integrations).map(([k, on]) => (
+              <div key={k} className="rounded-xl border border-[var(--line)] px-3.5 py-3 flex items-center gap-2.5">
+                <span className={`w-1.5 h-1.5 rounded-full ${on ? "bg-[var(--green)]" : "bg-[var(--faint)]"}`} />
+                <span className="text-[12px] font-medium capitalize">{k}</span>
+                <span className="text-[10px] text-[var(--faint)] ml-auto">{on ? "configured" : "env missing"}</span>
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-[var(--faint)] mt-3 leading-relaxed">Set SMTP_HOST/PORT/USER/PASS, STRIPE_SECRET_KEY, GITHUB_TOKEN, GOOGLE_CLIENT_ID/SECRET, CLOUDFLARE_API_TOKEN/ZONE_ID to enable these integrations.</p>
+        </div>
+      </div>
+      <div className="card p-6">
+        <h3 className="font-display font-semibold mb-1 flex items-center gap-2"><Mail size={15} className="text-[var(--violet-2)]" /> Mail outbox</h3>
+        <p className="text-[11px] text-[var(--faint)] mb-4">When SMTP isn't configured, verification/reset emails land here (still fully functional links).</p>
+        <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
+          {data.outbox.map((m) => (
+            <div key={m.id} className="rounded-xl border border-[var(--line)] p-3.5">
+              <div className="flex items-center gap-2 text-[12px]">
+                <span className="font-medium truncate">{m.subject}</span>
+                <span className={`ml-auto chip !text-[9px] ${m.sentAt ? "!text-[var(--green)]" : ""}`}>{m.sentAt ? "SENT" : "Queued (no SMTP)".toUpperCase()}</span>
+              </div>
+              <div className="text-[11px] text-[var(--faint)] mt-0.5">to {m.to} · {timeAgo(m.createdAt)}</div>
+              <pre className="text-[11px] font-code text-[var(--muted)] whitespace-pre-wrap mt-2 break-all">{m.body}</pre>
+            </div>
+          ))}
+          {data.outbox.length === 0 && <p className="text-[13px] text-[var(--faint)]">Outbox empty.</p>}
+        </div>
+      </div>
+    </div>
+  );
+}

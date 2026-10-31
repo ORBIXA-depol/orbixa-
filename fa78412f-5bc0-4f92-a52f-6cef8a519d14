@@ -1,0 +1,41 @@
+import { db } from "@/db";
+import { mailOutbox } from "@/db/schema";
+import nodemailer from "nodemailer";
+
+/**
+ * Sends transactional email via SMTP when SMTP_HOST/PORT/USER/PASS are configured.
+ * Otherwise the message is persisted to the mail outbox (inspectable from the
+ * admin panel) so verification/recovery links are never lost in dev.
+ */
+export async function sendEmail(to: string, subject: string, body: string) {
+  const host = process.env.SMTP_HOST;
+  if (host) {
+    try {
+      const transport = nodemailer.createTransport({
+        host,
+        port: Number(process.env.SMTP_PORT || 587),
+        secure: process.env.SMTP_SECURE === "true",
+        auth: process.env.SMTP_USER
+          ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+          : undefined,
+      });
+      await transport.sendMail({
+        from: process.env.SMTP_FROM || "ORBIXA <no-reply@orbixa.dev>",
+        to,
+        subject,
+        text: body,
+        html: body.replace(/\n/g, "<br/>"),
+      });
+      await db.insert(mailOutbox).values({ to, subject, body, sentAt: new Date() });
+      return { delivered: true };
+    } catch (e) {
+      console.error("[orbixa] smtp send failed", e);
+    }
+  }
+  await db.insert(mailOutbox).values({ to, subject, body, sentAt: null });
+  return { delivered: false };
+}
+
+export function appBaseUrl() {
+  return process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") || "";
+}

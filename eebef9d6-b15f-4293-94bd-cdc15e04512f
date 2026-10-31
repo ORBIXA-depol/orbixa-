@@ -1,0 +1,37 @@
+import type { Metadata, Viewport } from "next";
+import type { ReactNode } from "react";
+import { Space_Grotesk, Inter, JetBrains_Mono } from "next/font/google";
+import { CookieBanner } from "@/components/legal/cookie-banner";
+import "./globals.css";
+
+const display = Space_Grotesk({ subsets: ["latin"], variable: "--font-space", weight: ["400", "500", "600", "700"] });
+const inter = Inter({ subsets: ["latin"], variable: "--font-inter", weight: ["400", "500", "600", "700"] });
+const jb = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jb", weight: ["400", "500", "600"] });
+
+export const metadata: Metadata = {
+  title: { default: "ORBIXA — Build. Deploy. Scale. Beyond Limits.", template: "%s · ORBIXA" },
+  description:
+    "ORBIXA is the cloud platform for the next generation of the web. Deploy websites instantly, run serverless and edge functions, and scale globally with real-time analytics.",
+  keywords: ["cloud hosting", "website deployment", "serverless", "edge network", "ORBIXA"],
+  openGraph: { title: "ORBIXA", description: "Build. Deploy. Scale. Beyond Limits.", type: "website" },
+};
+
+export const viewport: Viewport = { themeColor: "#05060b", width: "device-width", initialScale: 1 };
+
+export default function RootLayout({ children }: { children: ReactNode }) {
+  return (
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{var t=localStorage.getItem("orbixa-theme");if(t==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}`,
+          }}
+        />
+      </head>
+      <body className={`${display.variable} ${inter.variable} ${jb.variable} antialiased`}>
+        {children}
+        <CookieBanner />
+      </body>
+    </html>
+  );
+}

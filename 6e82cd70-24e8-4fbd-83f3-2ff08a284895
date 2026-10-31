@@ -1,0 +1,139 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { Users, Plus, Crown, Trash2, ShieldCheck, Code2, Eye } from "lucide-react";
+import { Avatar, EmptyState } from "@/components/ui";
+import { timeAgo } from "@/lib/utils";
+
+type Member = { id: string; email: string; role: string; status: string; createdAt: string };
+type Team = { id: string; name: string; ownerId: string; createdAt: string };
+type TeamBundle = { team: Team; members: Member[] };
+
+const ROLE_META: Record<string, { icon: typeof Crown; c: string; d: string }> = {
+  admin: { icon: ShieldCheck, c: "#fbbf24", d: "Full control incl. billing & members" },
+  developer: { icon: Code2, c: "#38bdf8", d: "Deploy, configure, view analytics" },
+  viewer: { icon: Eye, c: "#8e97b8", d: "Read-only access" },
+};
+
+export default function TeamPage() {
+  const [teams, setTeams] = useState<TeamBundle[] | null>(null);
+  const [active, setActive] = useState(0);
+  const [teamName, setTeamName] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("developer");
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const load = useCallback(async () => {
+    const r = await fetch("/api/teams", { cache: "no-store" });
+    if (r.ok) setTeams((await r.json()).teams);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const team = teams?.[active];
+
+  return (
+    <div className="space-y-7 max-w-5xl">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="font-display font-bold text-2xl sm:text-3xl tracking-tight">Team Management</h1>
+          <p className="text-sm text-[var(--muted)] mt-1">Create teams, invite collaborators and control permissions.</p>
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-[280px_1fr] gap-5 items-start">
+        <div className="space-y-4">
+          <div className="card p-4 space-y-1">
+            {(teams ?? []).map((t, i) => (
+              <button
+                key={t.team.id}
+                onClick={() => setActive(i)}
+                className={`w-full text-left px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${i === active ? "text-[var(--text)]" : "text-[var(--muted)] hover:text-[var(--text)]"}`}
+                style={i === active ? { background: "rgba(124,92,255,.12)", boxShadow: "inset 0 0 0 1px rgba(124,92,255,.3)" } : {}}
+              >
+                <div className="flex items-center gap-2.5"><Users size={14} className="text-[var(--violet-2)]" /> {t.team.name}</div>
+                <div className="text-[10px] text-[var(--faint)] mt-0.5 ml-6">{t.members.length} member{t.members.length === 1 ? "" : "s"}</div>
+              </button>
+            ))}
+            {teams?.length === 0 && <p className="text-[12px] text-[var(--faint)] px-2 py-1">No teams yet.</p>}
+          </div>
+          <div className="card p-4">
+            <label className="label">Create a team</label>
+            <div className="flex gap-2">
+              <input className="input !py-2 !text-[13px]" placeholder="Core Infra" value={teamName} onChange={(e) => setTeamName(e.target.value)} />
+              <button className="btn btn-primary !py-2 !px-3 !text-xs" onClick={async () => {
+                const r = await fetch("/api/teams", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: teamName }) });
+                if (r.ok) { setTeamName(""); load(); setActive(0); }
+              }}><Plus size={14} /></button>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-5">
+          {!team ? (
+            <EmptyState icon={<Users size={22} />} title="Create your first team" hint="Teams let you share projects and delegate deployments with role-based permissions." />
+          ) : (
+            <>
+              <div className="card p-6">
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                  <div>
+                    <h2 className="font-display font-bold text-xl">{team.team.name}</h2>
+                    <p className="text-xs text-[var(--faint)] mt-0.5">Created {timeAgo(team.team.createdAt)}</p>
+                  </div>
+                  <span className="chip !text-[9px]">{team.members.filter((m) => m.status === "active").length} ACTIVE SEATS</span>
+                </div>
+                <div className="grid sm:grid-cols-[1fr_170px_auto] gap-2.5 mt-6">
+                  <input className="input !text-[13px]" placeholder="colleague@company.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} />
+                  <select className="input !text-[13px]" value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}>
+                    <option value="developer">Developer</option><option value="admin">Admin</option><option value="viewer">Viewer</option>
+                  </select>
+                  <button className="btn btn-primary !text-xs" onClick={async () => {
+                    const r = await fetch(`/api/teams/${team.team.id}/members`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: inviteEmail, role: inviteRole }) });
+                    const d = await r.json();
+                    setMsg({ ok: r.ok, text: r.ok ? (d.status === "invited" ? "Invite queued — they'll join on signup." : "Member added.") : d.error });
+                    if (r.ok) { setInviteEmail(""); load(); }
+                  }}>Invite</button>
+                </div>
+                {msg && <p className={`text-xs mt-3 ${msg.ok ? "text-[var(--green)]" : "text-[var(--red)]"}`}>{msg.text}</p>}
+              </div>
+
+              <div className="card p-2">
+                {team.members.map((m) => {
+                  const meta = ROLE_META[m.role] ?? ROLE_META.viewer;
+                  return (
+                    <div key={m.id} className="flex items-center gap-3.5 px-4 py-3.5 border-b border-[var(--line)] last:border-0 flex-wrap">
+                      <Avatar name={m.email} hue={(m.email.charCodeAt(0) * 7) % 360} size={32} />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium truncate">{m.email}</div>
+                        <div className="text-[10.5px] text-[var(--faint)] flex items-center gap-1 mt-0.5">
+                          {m.status === "invited" ? <span className="text-[var(--amber)]">Invite pending</span> : "Active"}
+                          {team.members.find((x) => x.email && team.team.ownerId) && null}
+                        </div>
+                      </div>
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold" style={{ color: meta.c }} title={meta.d}>
+                        <meta.icon size={12} /> {m.role}
+                      </span>
+                      <select
+                        className="input !w-auto !py-1.5 !text-[11px]"
+                        value={m.role}
+                        onChange={async (e) => {
+                          await fetch(`/api/teams/${team.team.id}/members`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ memberId: m.id, role: e.target.value }) });
+                          load();
+                        }}
+                      >
+                        <option value="admin">admin</option><option value="developer">developer</option><option value="viewer">viewer</option>
+                      </select>
+                      <button className="text-[var(--faint)] hover:text-[var(--red)]" onClick={async () => {
+                        await fetch(`/api/teams/${team.team.id}/members?memberId=${m.id}`, { method: "DELETE" });
+                        load();
+                      }}><Trash2 size={14} /></button>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

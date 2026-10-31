@@ -1,0 +1,292 @@
+import {
+  pgTable,
+  uuid,
+  text,
+  integer,
+  bigint,
+  boolean,
+  timestamp,
+  jsonb,
+  index,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+
+/* ----------------------------- AUTH & USERS ----------------------------- */
+
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    email: text("email").notNull(),
+    name: text("name").notNull(),
+    passwordHash: text("password_hash"),
+    googleId: text("google_id"),
+    avatarHue: integer("avatar_hue").default(265).notNull(),
+    emailVerified: boolean("email_verified").default(false).notNull(),
+    role: text("role").default("user").notNull(), // user | admin
+    suspended: boolean("suspended").default(false).notNull(),
+    company: text("company"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("users_email_idx").on(t.email)],
+);
+
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id").notNull(),
+    userAgent: text("user_agent"),
+    ip: text("ip"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [index("sessions_user_idx").on(t.userId)],
+);
+
+export const authTokens = pgTable(
+  "auth_tokens",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id").notNull(),
+    type: text("type").notNull(), // verify_email | reset_password
+    token: text("token").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("auth_tokens_token_idx").on(t.token)],
+);
+
+export const mailOutbox = pgTable("mail_outbox", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  to: text("to").notNull(),
+  subject: text("subject").notNull(),
+  body: text("body").notNull(),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+/* ------------------------------- BILLING -------------------------------- */
+
+export const plans = pgTable("plans", {
+  id: text("id").primaryKey(), // free | pro | business
+  name: text("name").notNull(),
+  priceMonthly: integer("price_monthly").notNull(), // cents
+  maxProjects: integer("max_projects").notNull(),
+  maxStorageMb: integer("max_storage_mb").notNull(),
+  maxBandwidthGb: integer("max_bandwidth_gb").notNull(),
+  maxTeamSeats: integer("max_team_seats").notNull(),
+  maxUploadMb: integer("max_upload_mb").notNull(),
+  features: jsonb("features").$type<string[]>().notNull(),
+});
+
+export const subscriptions = pgTable("subscriptions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull(),
+  planId: text("plan_id").notNull(),
+  status: text("status").notNull(), // active | canceled | past_due
+  provider: text("provider").default("orbixa").notNull(), // orbixa | stripe
+  providerRef: text("provider_ref"),
+  currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const invoices = pgTable("invoices", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull(),
+  planId: text("plan_id").notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  status: text("status").notNull(), // paid | open | refunded
+  description: text("description").notNull(),
+  provider: text("provider").default("orbixa").notNull(),
+  providerRef: text("provider_ref"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+/* ------------------------------ PROJECTS -------------------------------- */
+
+export const projects = pgTable(
+  "projects",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    teamId: uuid("team_id"),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    framework: text("framework").default("static").notNull(),
+    status: text("status").default("idle").notNull(), // idle | building | ready | failed
+    source: text("source").default("upload").notNull(), // upload | github | git
+    repoUrl: text("repo_url"),
+    activeDeploymentId: uuid("active_deployment_id"),
+    totalDeployments: integer("total_deployments").default(0).notNull(),
+    spaFallback: boolean("spa_fallback").default(true).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("projects_slug_idx").on(t.slug), index("projects_owner_idx").on(t.ownerId)],
+);
+
+export const deployments = pgTable(
+  "deployments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id").notNull(),
+    version: integer("version").notNull(),
+    status: text("status").default("queued").notNull(), // queued | building | ready | failed
+    source: text("source").notNull(),
+    sourceMeta: text("source_meta"), // original filename / repo url
+    framework: text("framework").default("static").notNull(),
+    fileCount: integer("file_count").default(0).notNull(),
+    totalBytes: bigint("total_bytes", { mode: "number" }).default(0).notNull(),
+    buildLog: text("build_log").default("").notNull(),
+    error: text("error"),
+    durationMs: integer("duration_ms"),
+    isActive: boolean("is_active").default(false).notNull(),
+    createdBy: uuid("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [index("deployments_project_idx").on(t.projectId), index("deployments_status_idx").on(t.status)],
+);
+
+export const domains = pgTable(
+  "domains",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id").notNull(),
+    domain: text("domain").notNull(),
+    verified: boolean("verified").default(false).notNull(),
+    verificationToken: text("verification_token").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("domains_domain_idx").on(t.domain)],
+);
+
+export const envVars = pgTable(
+  "env_vars",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id").notNull(),
+    key: text("key").notNull(),
+    valueEnc: text("value_enc").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("env_vars_project_idx").on(t.projectId)],
+);
+
+export const redirects = pgTable("redirects", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull(),
+  fromPath: text("from_path").notNull(),
+  toPath: text("to_path").notNull(),
+  status: integer("status").default(301).notNull(),
+});
+
+export const serverlessFns = pgTable("serverless_fns", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull(),
+  name: text("name").notNull(),
+  route: text("route").notNull(), // e.g. hello -> /sites/{slug}/api/hello
+  code: text("code").notNull(),
+  runtime: text("runtime").default("edge").notNull(), // edge | serverless
+  invocations: bigint("invocations", { mode: "number" }).default(0).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+/* ------------------------------ ANALYTICS ------------------------------- */
+
+export const events = pgTable(
+  "events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id").notNull(),
+    type: text("type").notNull(), // pageview | bandwidth | error | function
+    path: text("path"),
+    referrer: text("referrer"),
+    source: text("source"), // direct | search | social | referral
+    country: text("country"),
+    device: text("device"),
+    visitorHash: text("visitor_hash"),
+    bytes: bigint("bytes", { mode: "number" }).default(0).notNull(),
+    status: integer("status"),
+    durationMs: integer("duration_ms"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("events_project_idx").on(t.projectId, t.createdAt)],
+);
+
+/* ------------------------------- TEAMS ---------------------------------- */
+
+export const teams = pgTable("teams", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: text("name").notNull(),
+  slug: text("slug").notNull(),
+  ownerId: uuid("owner_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const teamMembers = pgTable(
+  "team_members",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    teamId: uuid("team_id").notNull(),
+    userId: uuid("user_id"),
+    email: text("email").notNull(),
+    role: text("role").default("viewer").notNull(), // admin | developer | viewer
+    status: text("status").default("invited").notNull(), // invited | active
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("team_members_team_idx").on(t.teamId)],
+);
+
+export const activities = pgTable(
+  "activities",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id"),
+    teamId: uuid("team_id"),
+    projectId: uuid("project_id"),
+    action: text("action").notNull(),
+    detail: text("detail"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("activities_user_idx").on(t.userId, t.createdAt)],
+);
+
+/* ------------------------------- PLATFORM ------------------------------- */
+
+export const securityLogs = pgTable(
+  "security_logs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id"),
+    event: text("event").notNull(),
+    ip: text("ip"),
+    detail: text("detail"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("security_logs_created_idx").on(t.createdAt)],
+);
+
+export const platformConfig = pgTable("platform_config", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+});
+
+/* ---------------------------- LEGAL CENTER ------------------------------- */
+
+export const policyAcceptances = pgTable(
+  "policy_acceptances",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id").notNull(),
+    policyId: text("policy_id").notNull(),
+    version: text("version").notNull(),
+    source: text("source").default("web").notNull(), // signup | banner | settings
+    ip: text("ip"),
+    userAgent: text("user_agent"),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("policy_acceptances_user_idx").on(t.userId), index("policy_acceptances_policy_idx").on(t.policyId, t.version)],
+);

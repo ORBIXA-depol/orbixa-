@@ -1,0 +1,132 @@
+import { cookies } from "next/headers";
+import { SignJWT, jwtVerify } from "jose";
+import { db } from "@/db";
+import { sessions, users, securityLogs } from "@/db/schema";
+import { and, eq, gt } from "drizzle-orm";
+import { platformSecret, ensureSeed } from "./platform";
+
+const COOKIE = "orbixa_session";
+export const runtime = "nodejs";
+
+async function jwtKey() {
+  return new TextEncoder().encode(await platformSecret());
+}
+
+export type SessionUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  emailVerified: boolean;
+  avatarHue: number;
+};
+
+export async function createSession(userId: string, ua?: string, ip?: string) {
+  await ensureSeed();
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
+  const created = await db.insert(sessions).values({ userId, userAgent: ua, ip, expiresAt }).returning();
+  const sid = created[0].id;
+  const token = await new SignJWT({ sid, uid: userId })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime(expiresAt)
+    .sign(await jwtKey());
+  const c = await cookies();
+  c.set(COOKIE, token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    expires: expiresAt,
+  });
+  return token;
+}
+
+export async function destroySession() {
+  const c = await cookies();
+  const token = c.get(COOKIE)?.value;
+  if (token) {
+    try {
+      const { payload } = await jwtVerify(token, await jwtKey());
+      if (payload.sid) await db.delete(sessions).where(eq(sessions.id, payload.sid as string));
+    } catch { /* ignore */ }
+  }
+  c.delete(COOKIE);
+}
+
+export async function currentUser(): Promise<SessionUser | null> {
+  await ensureSeed();
+  const c = await cookies();
+  const token = c.get(COOKIE)?.value;
+  if (!token) return null;
+  try {
+    const { payload } = await jwtVerify(token, await jwtKey());
+    const sid = payload.sid as string;
+    const sess = await db
+      .select()
+      .from(sessions)
+      .where(and(eq(sessions.id, sid), gt(sessions.expiresAt, new Date())))
+      .limit(1);
+    if (!sess[0]) return null;
+    const u = await db.select().from(users).where(eq(users.id, sess[0].userId)).limit(1);
+    const user = u[0];
+    if (!user || user.suspended) return null;
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      emailVerified: user.emailVerified,
+      avatarHue: user.avatarHue,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function requireUser() {
+  const u = await currentUser();
+  if (!u) return null;
+  return u;
+}
+
+export async function requireAdmin() {
+  const u = await currentUser();
+  if (!u || u.role !== "admin") return null;
+  return u;
+}
+
+export async function logSecurity(event: string, ip: string | null, detail: string, userId?: string) {
+  try {
+    await db.insert(securityLogs).values({ event, ip, detail, userId });
+  } catch { /* non-fatal */ }
+}
+
+/* ------------------------------ Rate limiting --------------------------- */
+
+const buckets = new Map<string, number[]>();
+
+/** Fixed-window rate limiter (in-memory per instance). */
+export function rateLimit(key: string, limit: number, windowMs: number) {
+  const now = Date.now();
+  const arr = (buckets.get(key) ?? []).filter((t) => now - t < windowMs);
+  if (arr.length >= limit) {
+    buckets.set(key, arr);
+    return false;
+  }
+  arr.push(now);
+  buckets.set(key, arr);
+  return true;
+}
+
+export function clientIp(req: Request) {
+  const h = req.headers;
+  return (
+    h.get("x-forwarded-for")?.split(",")[0].trim() ||
+    h.get("x-real-ip") ||
+    "127.0.0.1"
+  );
+}
+
+export const json = (data: unknown, status = 200) =>
+  new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });

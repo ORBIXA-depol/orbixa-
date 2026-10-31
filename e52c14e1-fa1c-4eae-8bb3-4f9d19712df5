@@ -1,0 +1,16 @@
+import { db } from "@/db";
+import { sql } from "drizzle-orm";
+import { ensureSeed } from "@/lib/platform";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  try {
+    await ensureSeed();
+    await db.execute(sql`select 1`);
+    return Response.json({ status: "ok", service: "orbixa", db: "connected", time: new Date().toISOString() });
+  } catch (e) {
+    return Response.json({ status: "degraded", error: e instanceof Error ? e.message : "unknown" }, { status: 503 });
+  }
+}
