@@ -1,0 +1,47 @@
+# ORBIXA — Build. Deploy. Scale. Beyond Limits.
+
+A full-stack cloud hosting & website deployment platform (Netlify/Vercel-class): real ZIP/GitHub/Git deployments with framework detection, isolated builds with live logs, instantly live public URLs under `/sites/{slug}/`, serverless/edge functions, first-party analytics, teams, billing, and a full admin console.
+
+## Stack
+- Next.js 16 (App Router) · React 19 · Tailwind CSS 4
+- PostgreSQL via Drizzle ORM (`src/db/schema.ts`)
+- Local object storage driver (`.orbixa-storage/`) — swap for S3/R2 in production
+- Serving layer: `middleware.ts` rewrites `/sites/*` → `/api/serve` (edge-style file delivery, function dispatch, beacon injection, bandwidth metering)
+
+## Runtime features (all real, no mocks)
+- Auth: email + password (bcrypt-12), JWT sessions backed by revocable DB rows, email verification, password recovery, Google OAuth (when configured)
+- Deployments: secure ZIP extraction (zip-slip/size/file-count protections), framework auto-detect (Static/React/Next/Vue/Astro/Svelte), `npm install && npm run build` in sandboxed workspaces for framework projects, prebuilt `dist|build|out` auto-detection, real-time build log polling, versioning, instant rollback & redeploy from stored archives
+- Functions: `sites/{slug}/api/{route}` executed in a `node:vm` sandbox (3s CPU limit, no fs/process), AES-256-GCM env vars injected
+- Analytics: real beacon + delivery-layer metering (visitors, views, sources, geo via edge headers, bandwidth, latency, 404 monitoring)
+- Teams, billing (built-in auditable invoices; real Stripe Checkout when configured), admin console (users, deploys, infra metrics, security logs, platform config, mail outbox)
+
+## Environment variables
+| Variable | Purpose | Required |
+|---|---|---|
+| `DATABASE_URL` | PostgreSQL connection | yes (provided) |
+| `AUTH_SECRET` | JWT/session + secret encryption key | optional (auto-generated & persisted if absent) |
+| `NEXT_PUBLIC_APP_URL` | Absolute base URL for emailed links | optional |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Transactional email delivery | optional — without it, links go to the admin Mail Outbox |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google OAuth sign-in | optional |
+| `GITHUB_TOKEN` | GitHub imports: private repos + higher rate limits | optional |
+| `STRIPE_SECRET_KEY`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_BUSINESS` | Stripe Checkout for paid plans | optional — built-in billing otherwise |
+| `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_API_TOKEN` | Upstream CDN cache purging | optional |
+| `DATA_DIR` | Object-storage root (default `.orbixa-storage`) | optional |
+| `BUILD_TIMEOUT_MS` | Build worker timeout (default 240000) | optional |
+| `ADMIN_PASSWORD` | First admin's initial password | optional (default in seed, change immediately) |
+
+Default admin: `admin@orbixa.dev` / `OrbixaAdmin!2026` (created only when no admin exists; **change it in production**).
+
+## Getting started
+```bash
+npm install
+npx drizzle-kit push
+npm run build && npm run start
+```
+Open `/` for the landing experience, `/dashboard` after signup, `/admin` for the console.
+
+## Production hardening checklist
+- Replace the direct async build invocation with a queue (BullMQ/Temporal) and isolated containers per build (see `src/lib/launch.ts`)
+- Swap `src/lib/storage.ts` local driver for S3/R2
+- Terminate wildcard subdomains (`*.orbixa.site`) at the edge to enable per-site host serving (path-based URLs work everywhere today)
+- Move the in-memory rate limiter to Redis for multi-instance fleets

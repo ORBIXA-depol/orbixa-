@@ -1,0 +1,74 @@
+import { NextRequest, NextResponse } from "next/server";
+import { db } from "@/db";
+import { users, subscriptions, activities, policyAcceptances } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { createSession, clientIp, logSecurity } from "@/lib/auth";
+import { ensureSeed } from "@/lib/platform";
+import { BINDING_POLICY_IDS, getPolicy, currentVersion } from "@/lib/legal";
+
+export const runtime = "nodejs";
+
+type GoogleTokenRes = { access_token?: string; error?: string };
+type GoogleProfile = { sub: string; email: string; name?: string; email_verified?: boolean };
+
+export async function GET(req: NextRequest) {
+  await ensureSeed();
+  const origin = req.nextUrl.origin;
+  const code = req.nextUrl.searchParams.get("code");
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  if (!code || !clientId || !clientSecret) return NextResponse.redirect(`${origin}/login?error=google-unavailable`);
+
+  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: `${origin}/api/auth/google/callback`,
+      grant_type: "authorization_code",
+    }),
+    cache: "no-store",
+  });
+  const tokenJson = (await tokenRes.json()) as GoogleTokenRes;
+  if (!tokenJson.access_token) return NextResponse.redirect(`${origin}/login?error=google-token`);
+
+  const profRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+    headers: { authorization: `Bearer ${tokenJson.access_token}` },
+    cache: "no-store",
+  });
+  const profile = (await profRes.json()) as GoogleProfile;
+  if (!profile?.email) return NextResponse.redirect(`${origin}/login?error=google-profile`);
+
+  const email = profile.email.toLowerCase();
+  const existing = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  let userId: string;
+  if (existing[0]) {
+    userId = existing[0].id;
+    if (!existing[0].googleId) await db.update(users).set({ googleId: profile.sub, emailVerified: true }).where(eq(users.id, userId));
+  } else {
+    const created = await db.insert(users).values({
+      email,
+      name: profile.name || email.split("@")[0],
+      googleId: profile.sub,
+      emailVerified: !!profile.email_verified,
+      avatarHue: Math.floor(Math.random() * 360),
+    }).returning();
+    userId = created[0].id;
+    await db.insert(subscriptions).values({ userId, planId: "free", status: "active" });
+    // Continuing with Google constitutes acceptance; record binding policies.
+    for (const pid of BINDING_POLICY_IDS) {
+      const p = getPolicy(pid);
+      if (!p) continue;
+      await db.insert(policyAcceptances).values({
+        userId, policyId: pid, version: currentVersion(p), source: "signup",
+        ip: clientIp(req), userAgent: req.headers.get("user-agent")?.slice(0, 300) ?? null,
+      });
+    }
+    await db.insert(activities).values({ userId, action: "account.created", detail: "Signed up with Google" });
+  }
+  await logSecurity("login.google", clientIp(req), email, userId);
+  await createSession(userId, req.headers.get("user-agent") ?? undefined, clientIp(req));
+  return NextResponse.redirect(`${origin}/dashboard`);
+}
